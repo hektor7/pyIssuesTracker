@@ -122,7 +122,32 @@ if [ -n "${XDG_CURRENT_DESKTOP:-}" ]; then
 fi
 export PYTHONUNBUFFERED=1
 
+# ---- Verificar dependencias del sistema ----
+MISSING_LIBS=""
+if ! ldconfig -p 2>/dev/null | grep -q libxcb-cursor; then
+    MISSING_LIBS="libxcb-cursor0"
+elif [ ! -f /usr/lib/x86_64-linux-gnu/libxcb-cursor.so.0 ] && [ ! -f /usr/lib/libxcb-cursor.so.0 ]; then
+    MISSING_LIBS="libxcb-cursor0"
+fi
+
+if [ -n "$MISSING_LIBS" ]; then
+    echo -e "${YELLOW}[AVISO]${NC} Falta la libreria del sistema '${MISSING_LIBS}'."
+    echo "        Qt6 la necesita para funcionar en Linux."
+    echo "        Instalala con:"
+    echo ""
+    echo -e "          ${CYAN}sudo apt install ${MISSING_LIBS}${NC}"
+    echo ""
+fi
+
 # ---- Ejecutar ----
 echo -e "${YELLOW}[INFO]${NC} Iniciando PyIssuesTracker..."
-"$VENV_PYTHON" "$MAIN_SCRIPT" &
+"$VENV_PYTHON" "$MAIN_SCRIPT" 2>&1 | while IFS= read -r line; do
+    echo "$line"
+    if echo "$line" | grep -q "libxcb-cursor"; then
+        echo ""
+        echo -e "${YELLOW}[AVISO]${NC} Parece que falta libxcb-cursor0."
+        echo "        Ejecuta: sudo apt install libxcb-cursor0"
+        echo ""
+    fi
+done &
 disown
