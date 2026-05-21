@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ================================================================
 # PyIssuesTracker - Lanzador Linux (Mint, XFCE, KDE, GNOME, etc.)
-# Detecta Python, crea venv, instala dependencias y ejecuta
+# Detecta Python, crea/recrea venv, instala dependencias y ejecuta
 # ================================================================
 
 set -euo pipefail
@@ -13,9 +13,13 @@ VENV_DIR=".venv"
 REQUIREMENTS_FILE="requirements.txt"
 MAIN_SCRIPT="main.py"
 APP_NAME="PyIssuesTracker"
-APP_VERSION="0.1.1"
 
-# ---- Colores ----
+# Leer version desde app/__init__.py si existe
+APP_VERSION="0.0.0"
+if [ -f "app/__init__.py" ]; then
+    APP_VERSION=$(grep -oP '__version__\s*=\s*"\K[^"]+' app/__init__.py 2>/dev/null || echo "0.0.0")
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -47,34 +51,62 @@ if [ -z "$PYTHON_EXE" ]; then
     exit 1
 fi
 
+PYTHON_VER=$("$PYTHON_EXE" --version 2>&1)
 echo -e "${GREEN}[OK]${NC} Python encontrado: $PYTHON_EXE"
-"$PYTHON_EXE" --version
+echo "       $PYTHON_VER"
 echo ""
 
-# ---- Crear venv si no existe ----
-if [ ! -f "$VENV_DIR/bin/python" ]; then
-    echo -e "${YELLOW}[INFO]${NC} Creando entorno virtual..."
+# ---- Verificar/Crear venv ----
+VENV_PYTHON="$VENV_DIR/bin/python"
+VENV_PIP="$VENV_DIR/bin/pip"
+NEED_CREATE=false
+
+if [ -f "$VENV_PYTHON" ] && [ -x "$VENV_PYTHON" ]; then
+    VENV_VER=$("$VENV_PYTHON" --version 2>&1 || echo "ERROR")
+    if [ "$VENV_VER" = "ERROR" ]; then
+        echo -e "${YELLOW}[WARN]${NC} Entorno virtual corrupto (python no ejecutable). Recreando..."
+        NEED_CREATE=true
+    else
+        echo -e "${GREEN}[OK]${NC} Entorno virtual: $VENV_VER"
+    fi
+else
+    NEED_CREATE=true
+fi
+
+if $NEED_CREATE; then
+    echo -e "${YELLOW}[INFO]${NC} Creando entorno virtual con $PYTHON_EXE..."
+    rm -rf "$VENV_DIR"
+
+    if ! "$PYTHON_EXE" -m venv --help &>/dev/null; then
+        echo -e "${RED}[ERROR]${NC} El modulo venv no esta disponible.${NC}"
+        echo "        Instalalo con: sudo apt install python3-venv"
+        exit 1
+    fi
+
     "$PYTHON_EXE" -m venv "$VENV_DIR" || {
-        echo -e "${RED}[ERROR]${NC} No se pudo crear el entorno virtual."
-        echo "        Instala venv con: sudo apt install python3-venv"
+        echo -e "${RED}[ERROR]${NC} No se pudo crear el entorno virtual.${NC}"
         exit 1
     }
     echo -e "${GREEN}[OK]${NC} Entorno virtual creado."
-else
-    echo -e "${GREEN}[OK]${NC} Entorno virtual existente."
 fi
 
-# ---- Rutas del venv ----
-VENV_PYTHON="$VENV_DIR/bin/python"
-VENV_PIP="$VENV_DIR/bin/pip"
+# ---- Verificar que pip existe ----
+if [ ! -f "$VENV_PIP" ]; then
+    echo -e "${YELLOW}[INFO]${NC} Instalando pip en el entorno virtual..."
+    "$VENV_PYTHON" -m ensurepip --upgrade 2>/dev/null || {
+        echo -e "${RED}[ERROR]${NC} No se pudo instalar pip en el venv.${NC}"
+        exit 1
+    }
+fi
+echo ""
 
 # ---- Instalar/actualizar dependencias ----
 if [ -f "$REQUIREMENTS_FILE" ]; then
     echo -e "${YELLOW}[INFO]${NC} Verificando dependencias..."
     if ! "$VENV_PYTHON" -c "import PyQt6, httpx, packaging" 2>/dev/null; then
-        echo -e "${YELLOW}[INFO]${NC} Instalando dependencias..."
+        echo -e "${YELLOW}[INFO]${NC} Instalando dependencias...${NC}"
         "$VENV_PIP" install --quiet -r "$REQUIREMENTS_FILE" || {
-            echo -e "${RED}[ERROR]${NC} Fallo la instalacion de dependencias."
+            echo -e "${RED}[ERROR]${NC} Fallo la instalacion de dependencias.${NC}"
             echo "        Para diagnosticar: $VENV_PIP install -r $REQUIREMENTS_FILE"
             exit 1
         }
@@ -83,11 +115,9 @@ if [ -f "$REQUIREMENTS_FILE" ]; then
         echo -e "${GREEN}[OK]${NC} Dependencias ya instaladas."
     fi
 fi
-
 echo ""
 
 # ---- XFCE / Mint: asegurar compatibilidad con tray icon ----
-# Algunos entornos necesitan sni-qt o configuracion extra
 if [ -n "${XDG_CURRENT_DESKTOP:-}" ]; then
     case "$XDG_CURRENT_DESKTOP" in
         XFCE|X-Cinnamon|MATE)
