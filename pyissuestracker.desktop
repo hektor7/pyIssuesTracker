@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=PyIssuesTracker
+GenericName=Cliente Redmine
+Comment=Cliente de escritorio multiplataforma para Redmine
+Icon=applications-development
+Exec=bash -c 'cd "$(dirname "$(readlink -f "%k")")" && ./launcher.sh'
+Path=
+Terminal=false
+Categories=Development;ProjectManagement;Qt;
+Keywords=redmine;issues;tracker;tareas;proyectos;
+StartupNotify=true
+StartupWMClass=PyIssuesTracker
