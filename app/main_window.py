@@ -156,7 +156,7 @@ class MainWindow(QMainWindow):
         try:
             self._redmine.test_connection()
             self._current_user_id = self._redmine.get_current_user_id()
-            self._status_indicator.set_connected(True, f"Conectado a {self._settings.redmine_url}")
+            self._status_indicator.set_connected(True, "Conectado")
             self._tray.set_icon_connected(True)
             self._tray.notify(APP_DISPLAY_NAME, "Conectado a Redmine correctamente")
             self._cargar_proyectos()

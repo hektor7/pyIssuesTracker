@@ -109,9 +109,9 @@ class RedmineClient:
             resp.raise_for_status()
             return resp.json()
         except httpx.ConnectError as e:
-            raise RedmineConnectionError(f"No se pudo conectar a {self._base_url}: {e}")
+            raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
         except httpx.TimeoutException:
-            raise RedmineConnectionError(f"Timeout al conectar a {self._base_url}")
+            raise RedmineConnectionError("Timeout al conectar al servidor Redmine")
 
     def _post(self, path: str, data: dict) -> dict:
         try:
@@ -122,9 +122,9 @@ class RedmineClient:
             resp.raise_for_status()
             return resp.json()
         except httpx.ConnectError as e:
-            raise RedmineConnectionError(f"No se pudo conectar a {self._base_url}: {e}")
+            raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
         except httpx.TimeoutException:
-            raise RedmineConnectionError(f"Timeout al conectar a {self._base_url}")
+            raise RedmineConnectionError("Timeout al conectar al servidor Redmine")
 
     def _put(self, path: str, data: dict) -> dict:
         try:
@@ -134,9 +134,9 @@ class RedmineClient:
                 raise RedmineAuthError("API key no válida (HTTP 401)")
             resp.raise_for_status()
         except httpx.ConnectError as e:
-            raise RedmineConnectionError(f"No se pudo conectar a {self._base_url}: {e}")
+            raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
         except httpx.TimeoutException:
-            raise RedmineConnectionError(f"Timeout al conectar a {self._base_url}")
+            raise RedmineConnectionError("Timeout al conectar al servidor Redmine")
         return {}
 
     def _check_redirect(self, resp, path: str):
@@ -144,13 +144,12 @@ class RedmineClient:
             location = resp.headers.get("Location", "")
             if "login" in location.lower() or "sso" in location.lower() or "auth" in location.lower():
                 raise RedmineSSOError(
-                    f"El servidor Redmine esta protegido por un portal de autenticacion (SSO).\n\n"
-                    f"La peticion a '{path}' fue redirigida a:\n{location}\n\n"
-                    f"La API key no es suficiente. El administrador debe configurar\n"
-                    f"Redmine para permitir acceso API sin pasar por el SSO."
+                    "El servidor Redmine esta protegido por un portal de autenticacion (SSO).\n\n"
+                    "La API key no es suficiente. El administrador debe configurar\n"
+                    "Redmine para permitir acceso API sin pasar por el SSO."
                 )
             raise RedmineSSOError(
-                f"Redireccion inesperada [{resp.status_code}] en '{path}' a:\n{location}"
+                f"Redireccion inesperada [{resp.status_code}] en '{path}'."
             )
 
     def test_connection(self) -> bool:

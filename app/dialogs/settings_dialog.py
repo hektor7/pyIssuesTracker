@@ -41,7 +41,7 @@ class SettingsDialog(QDialog):
         form.setSpacing(10)
 
         self._url_edit = QLineEdit()
-        self._url_edit.setPlaceholderText("https://redmine.ejemplo.com")
+        self._url_edit.setPlaceholderText("https://")
         form.addRow("URL del servidor:", self._url_edit)
 
         self._apikey_edit = QLineEdit()
