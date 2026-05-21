@@ -62,6 +62,10 @@ class RedmineConnectionError(RedmineError):
     pass
 
 
+class RedmineSSOError(RedmineError):
+    pass
+
+
 class RedmineClient:
     def __init__(self, base_url: str, api_key: str, proxy_url: str | None = None):
         self._base_url = base_url.rstrip("/")
@@ -82,6 +86,7 @@ class RedmineClient:
             base_url=self._base_url,
             headers=headers,
             timeout=REDMINE_REQUEST_TIMEOUT,
+            follow_redirects=False,
             transport=httpx.HTTPTransport(**transport_kwargs) if transport_kwargs else None,
         )
 
@@ -94,6 +99,7 @@ class RedmineClient:
     def _get(self, path: str, params: dict | None = None) -> dict:
         try:
             resp = self.client.get(path, params=params or {})
+            self._check_redirect(resp, path)
             if resp.status_code == 401:
                 raise RedmineAuthError("API key no válida (HTTP 401)")
             if resp.status_code == 403:
@@ -107,9 +113,23 @@ class RedmineClient:
         except httpx.TimeoutException:
             raise RedmineConnectionError(f"Timeout al conectar a {self._base_url}")
 
+    def _post(self, path: str, data: dict) -> dict:
+        try:
+            resp = self.client.post(path, json=data)
+            self._check_redirect(resp, path)
+            if resp.status_code == 401:
+                raise RedmineAuthError("API key no válida (HTTP 401)")
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.ConnectError as e:
+            raise RedmineConnectionError(f"No se pudo conectar a {self._base_url}: {e}")
+        except httpx.TimeoutException:
+            raise RedmineConnectionError(f"Timeout al conectar a {self._base_url}")
+
     def _put(self, path: str, data: dict) -> dict:
         try:
             resp = self.client.put(path, json=data)
+            self._check_redirect(resp, path)
             if resp.status_code == 401:
                 raise RedmineAuthError("API key no válida (HTTP 401)")
             resp.raise_for_status()
@@ -118,6 +138,20 @@ class RedmineClient:
         except httpx.TimeoutException:
             raise RedmineConnectionError(f"Timeout al conectar a {self._base_url}")
         return {}
+
+    def _check_redirect(self, resp, path: str):
+        if resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get("Location", "")
+            if "login" in location.lower() or "sso" in location.lower() or "auth" in location.lower():
+                raise RedmineSSOError(
+                    f"El servidor Redmine esta protegido por un portal de autenticacion (SSO).\n\n"
+                    f"La peticion a '{path}' fue redirigida a:\n{location}\n\n"
+                    f"La API key no es suficiente. El administrador debe configurar\n"
+                    f"Redmine para permitir acceso API sin pasar por el SSO."
+                )
+            raise RedmineSSOError(
+                f"Redireccion inesperada [{resp.status_code}] en '{path}' a:\n{location}"
+            )
 
     def test_connection(self) -> bool:
         self._get("/users/current.json")
@@ -206,20 +240,10 @@ class RedmineClient:
         }
         if assigned_to_id:
             payload["assigned_to_id"] = assigned_to_id
-        try:
-            resp = self.client.post("/issues.json", json={"issue": payload})
-            resp.raise_for_status()
-            return resp.json()
-        except httpx.ConnectError as e:
-            raise RedmineConnectionError(str(e))
+        return self._post("/issues.json", {"issue": payload})
 
     def update_issue(self, issue_id: int, **fields) -> dict:
-        try:
-            resp = self.client.put(f"/issues/{issue_id}.json", json={"issue": fields})
-            resp.raise_for_status()
-        except httpx.ConnectError as e:
-            raise RedmineConnectionError(str(e))
-        return {}
+        return self._put(f"/issues/{issue_id}.json", {"issue": fields})
 
     def assign_issue(self, issue_id: int, user_id: int) -> dict:
         return self.update_issue(issue_id, assigned_to_id=user_id)
@@ -234,12 +258,7 @@ class RedmineClient:
         fields: dict[str, Any] = {"status_id": status_id}
         if notes:
             fields["notes"] = notes
-        try:
-            resp = self.client.put(f"/issues/{issue_id}.json", json={"issue": fields})
-            resp.raise_for_status()
-        except httpx.ConnectError as e:
-            raise RedmineConnectionError(str(e))
-        return {}
+        return self._put(f"/issues/{issue_id}.json", {"issue": fields})
 
     # ---- Estados ----
 

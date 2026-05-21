@@ -9,6 +9,7 @@ from app import __version__
 from app.services.settings_manager import SettingsManager
 from app.services.redmine_client import (
     RedmineClient, RedmineError, RedmineAuthError, RedmineConnectionError,
+    RedmineSSOError,
 )
 from app.services.update_manager import UpdateManager
 from app.widgets.status_indicator import StatusIndicator
@@ -166,6 +167,11 @@ class MainWindow(QMainWindow):
             self._tray.set_icon_connected(False)
             QMessageBox.critical(self, "Error de autenticación",
                                  f"API key no válida o permisos insuficientes.\n\n{str(e)}")
+        except RedmineSSOError as e:
+            self._status_indicator.set_connected(False, "SSO detectado")
+            self._tray.set_icon_connected(False)
+            QMessageBox.warning(self, "Portal de autenticación (SSO)",
+                                f"{str(e)}")
         except RedmineConnectionError as e:
             self._status_indicator.set_connected(False, "Sin conexión")
             self._tray.set_icon_connected(False)
