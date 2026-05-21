@@ -5,6 +5,7 @@ from app.utils.constants import (
     APP_NAME,
     KEY_REDMINE_URL,
     KEY_REDMINE_API_KEY,
+    KEY_REDMINE_SESSION_COOKIE,
     KEY_PROXY_ENABLED,
     KEY_PROXY_TYPE,
     KEY_PROXY_HOST,
@@ -49,6 +50,14 @@ class SettingsManager:
     @property
     def redmine_configured(self) -> bool:
         return bool(self.redmine_url.strip()) and bool(self.redmine_api_key.strip())
+
+    @property
+    def session_cookie(self) -> str:
+        return self._settings.value(KEY_REDMINE_SESSION_COOKIE, "")
+
+    @session_cookie.setter
+    def session_cookie(self, value: str):
+        self._settings.setValue(KEY_REDMINE_SESSION_COOKIE, value.strip())
 
     # ---- Proxy ----
 

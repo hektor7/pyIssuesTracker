@@ -49,9 +49,15 @@ class SettingsDialog(QDialog):
         self._apikey_edit.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("API Key:", self._apikey_edit)
 
+        self._cookie_edit = QLineEdit()
+        self._cookie_edit.setPlaceholderText("Cookie de sesion del navegador (opcional)")
+        form.addRow("Cookie:", self._cookie_edit)
+
         info = QLabel(
-            "La API key se obtiene en Redmine: Mi cuenta → Mostrar API key.\n"
-            "Debe estar habilitada la API REST en Administración → Configuración → API."
+            "API key: Mi cuenta -> Mostrar API key.\n"
+            "Cookie: Si Redmine esta tras un SSO, abre Redmine en el navegador,\n"
+            "inicia sesion, pulsa F12 -> Application/Storage -> Cookies,\n"
+            "y pega aqui la cookie de sesion completa (ej: _redmine_session=abc123)."
         )
         info.setWordWrap(True)
         info.setStyleSheet("color: gray; font-size: 10pt;")
@@ -120,6 +126,7 @@ class SettingsDialog(QDialog):
     def _load_settings(self):
         self._url_edit.setText(self._settings.redmine_url)
         self._apikey_edit.setText(self._settings.redmine_api_key)
+        self._cookie_edit.setText(self._settings.session_cookie)
         self._proxy_enabled_cb.setChecked(self._settings.proxy_enabled)
         idx = self._proxy_type_combo.findText(self._settings.proxy_type)
         if idx >= 0:
@@ -136,6 +143,7 @@ class SettingsDialog(QDialog):
     def _save_and_accept(self):
         self._settings.redmine_url = self._url_edit.text().strip()
         self._settings.redmine_api_key = self._apikey_edit.text().strip()
+        self._settings.session_cookie = self._cookie_edit.text().strip()
         self._settings.proxy_enabled = self._proxy_enabled_cb.isChecked()
         self._settings.proxy_type = self._proxy_type_combo.currentText()
         self._settings.proxy_host = self._proxy_host_edit.text().strip()

@@ -38,6 +38,7 @@ STATUS_REJECTED = "Rechazada"
 # ============================================================
 KEY_REDMINE_URL = "redmine/url"
 KEY_REDMINE_API_KEY = "redmine/api_key"
+KEY_REDMINE_SESSION_COOKIE = "redmine/session_cookie"
 KEY_PROXY_ENABLED = "proxy/enabled"
 KEY_PROXY_TYPE = "proxy/type"        # http, https, socks5
 KEY_PROXY_HOST = "proxy/host"
