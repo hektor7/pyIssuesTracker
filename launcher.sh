@@ -122,12 +122,16 @@ if [ -n "${XDG_CURRENT_DESKTOP:-}" ]; then
 fi
 export PYTHONUNBUFFERED=1
 
-# ---- Verificar dependencias del sistema ----
+# ---- Verificar dependencias del sistema (solo Debian/Ubuntu/Mint) ----
 MISSING_LIBS=""
-if ! ldconfig -p 2>/dev/null | grep -q libxcb-cursor; then
-    MISSING_LIBS="libxcb-cursor0"
-elif [ ! -f /usr/lib/x86_64-linux-gnu/libxcb-cursor.so.0 ] && [ ! -f /usr/lib/libxcb-cursor.so.0 ]; then
-    MISSING_LIBS="libxcb-cursor0"
+if command -v dpkg &>/dev/null; then
+    if ! dpkg -l libxcb-cursor0 2>/dev/null | grep -q '^ii'; then
+        MISSING_LIBS="libxcb-cursor0"
+    fi
+elif command -v ldconfig &>/dev/null; then
+    if ! ldconfig -p 2>/dev/null | grep -q libxcb-cursor; then
+        MISSING_LIBS="libxcb-cursor0"
+    fi
 fi
 
 if [ -n "$MISSING_LIBS" ]; then
@@ -141,13 +145,5 @@ fi
 
 # ---- Ejecutar ----
 echo -e "${YELLOW}[INFO]${NC} Iniciando PyIssuesTracker..."
-"$VENV_PYTHON" "$MAIN_SCRIPT" 2>&1 | while IFS= read -r line; do
-    echo "$line"
-    if echo "$line" | grep -q "libxcb-cursor"; then
-        echo ""
-        echo -e "${YELLOW}[AVISO]${NC} Parece que falta libxcb-cursor0."
-        echo "        Ejecuta: sudo apt install libxcb-cursor0"
-        echo ""
-    fi
-done &
+"$VENV_PYTHON" "$MAIN_SCRIPT" &
 disown
