@@ -90,14 +90,9 @@ if $NEED_CREATE; then
     echo -e "${GREEN}[OK]${NC} Entorno virtual creado."
 fi
 
-# ---- Verificar que pip existe ----
-if [ ! -f "$VENV_PIP" ]; then
-    echo -e "${YELLOW}[INFO]${NC} Instalando pip en el entorno virtual..."
-    "$VENV_PYTHON" -m ensurepip --upgrade 2>/dev/null || {
-        echo -e "${RED}[ERROR]${NC} No se pudo instalar pip en el venv.${NC}"
-        exit 1
-    }
-fi
+# ---- Asegurar pip (usar python -m pip, no el binario) ----
+"$VENV_PYTHON" -m ensurepip --upgrade 2>/dev/null || true
+
 echo ""
 
 # ---- Instalar/actualizar dependencias ----
@@ -105,9 +100,9 @@ if [ -f "$REQUIREMENTS_FILE" ]; then
     echo -e "${YELLOW}[INFO]${NC} Verificando dependencias..."
     if ! "$VENV_PYTHON" -c "import PyQt6, httpx, packaging" 2>/dev/null; then
         echo -e "${YELLOW}[INFO]${NC} Instalando dependencias...${NC}"
-        "$VENV_PIP" install --quiet -r "$REQUIREMENTS_FILE" || {
+        "$VENV_PYTHON" -m pip install --quiet -r "$REQUIREMENTS_FILE" || {
             echo -e "${RED}[ERROR]${NC} Fallo la instalacion de dependencias.${NC}"
-            echo "        Para diagnosticar: $VENV_PIP install -r $REQUIREMENTS_FILE"
+            echo "        Para diagnosticar: $VENV_PYTHON -m pip install -r $REQUIREMENTS_FILE"
             exit 1
         }
         echo -e "${GREEN}[OK]${NC} Dependencias instaladas."

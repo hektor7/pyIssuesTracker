@@ -72,16 +72,8 @@ if "!NEED_CREATE!"=="1" (
     echo [OK] Entorno virtual creado.
 )
 
-:: ---- Verificar pip ----
-if not exist "%VENV_PIP%" (
-    echo [INFO] Instalando pip en el entorno virtual...
-    "%VENV_PYTHON%" -m ensurepip --upgrade >nul 2>&1
-    if errorlevel 1 (
-        echo [ERROR] No se pudo instalar pip.
-        pause
-        exit /b 1
-    )
-)
+:: ---- Asegurar pip (usar python -m pip, no el binario) ----
+"%VENV_PYTHON%" -m ensurepip --upgrade >nul 2>&1
 echo.
 
 :: ---- Instalar/actualizar dependencias ----
@@ -90,10 +82,10 @@ if exist "%REQUIREMENTS_FILE%" (
     "%VENV_PYTHON%" -c "import PyQt6, httpx, packaging" 2>nul
     if errorlevel 1 (
         echo [INFO] Instalando dependencias...
-        "%VENV_PIP%" install --quiet -r "%REQUIREMENTS_FILE%"
+        "%VENV_PYTHON%" -m pip install --quiet -r "%REQUIREMENTS_FILE%"
         if errorlevel 1 (
             echo [ERROR] Fallo la instalacion de dependencias.
-            echo         Prueba manualmente: pip install -r %REQUIREMENTS_FILE%
+            echo         Prueba manualmente: %VENV_PYTHON% -m pip install -r %REQUIREMENTS_FILE%
             pause
             exit /b 1
         )
