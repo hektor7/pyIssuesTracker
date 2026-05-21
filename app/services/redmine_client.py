@@ -78,16 +78,12 @@ class RedmineClient:
             "X-Redmine-API-Key": self._api_key,
             "Content-Type": "application/json",
         }
-        transport_kwargs = {}
-        if self._proxy_url:
-            transport_kwargs["proxy"] = self._proxy_url
-
         return httpx.Client(
             base_url=self._base_url,
             headers=headers,
             timeout=REDMINE_REQUEST_TIMEOUT,
             follow_redirects=False,
-            transport=httpx.HTTPTransport(**transport_kwargs) if transport_kwargs else None,
+            proxy=self._proxy_url if self._proxy_url else None,
         )
 
     @property

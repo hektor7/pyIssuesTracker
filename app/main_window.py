@@ -77,7 +77,20 @@ class MainWindow(QMainWindow):
         self._status_indicator = StatusIndicator()
         self._status_indicator.setObjectName("status_indicator")
         self.setStatusBar(QStatusBar(self))
+
+        from PyQt6.QtWidgets import QLabel
+        self._proxy_label = QLabel()
+        self._proxy_label.setStyleSheet("padding: 0 6px; color: #2196F3; font-weight: bold;")
+        self.statusBar().addWidget(self._proxy_label)
         self.statusBar().addPermanentWidget(self._status_indicator)
+
+        if self._settings.proxy_enabled and self._settings.proxy_host:
+            self._proxy_label.setText(" PROXY ")
+            self._proxy_label.setToolTip(
+                f"Proxy: {self._settings.proxy_type}://{self._settings.proxy_host}:{self._settings.proxy_port}"
+            )
+        else:
+            self._proxy_label.clear()
 
     def _setup_menu(self):
         mb = self.menuBar()

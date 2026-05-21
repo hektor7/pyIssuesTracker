@@ -21,12 +21,10 @@ class UpdateManager:
         self._current_version = Version(__version__)
 
     def check_for_updates(self) -> UpdateInfo:
-        transport_kwargs = {}
-        if self._proxy_url:
-            transport_kwargs["proxy"] = self._proxy_url
-
-        with httpx.Client(timeout=REDMINE_REQUEST_TIMEOUT,
-                          transport=httpx.HTTPTransport(**transport_kwargs) if transport_kwargs else None) as client:
+        with httpx.Client(
+            timeout=REDMINE_REQUEST_TIMEOUT,
+            proxy=self._proxy_url if self._proxy_url else None,
+        ) as client:
             try:
                 resp = client.get(
                     GITHUB_API_RELEASES,
@@ -69,12 +67,11 @@ class UpdateManager:
         )
 
     def download_release(self, url: str, dest_path: str) -> bool:
-        transport_kwargs = {}
-        if self._proxy_url:
-            transport_kwargs["proxy"] = self._proxy_url
-
-        with httpx.Client(timeout=300, follow_redirects=True,
-                          transport=httpx.HTTPTransport(**transport_kwargs) if transport_kwargs else None) as client:
+        with httpx.Client(
+            timeout=300,
+            follow_redirects=True,
+            proxy=self._proxy_url if self._proxy_url else None,
+        ) as client:
             try:
                 with client.stream("GET", url) as resp:
                     resp.raise_for_status()
