@@ -1,6 +1,6 @@
 from PyQt6.QtCore import pyqtSignal, QObject
 from PyQt6.QtGui import QIcon, QAction
-from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
+from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QApplication, QStyle
 
 
 class TrayManager(QObject):
@@ -18,24 +18,28 @@ class TrayManager(QObject):
 
     def _setup_icon(self):
         icon = QApplication.style().standardIcon(
-            QApplication.style().StandardPixmap.SP_ComputerIcon
+            QStyle.StandardPixmap.SP_ComputerIcon
         )
         self._tray.setIcon(icon)
 
     def _setup_menu(self):
         menu = QMenu()
+        style = QApplication.style()
 
-        action_show = QAction("Mostrar ventana")
+        action_show = QAction(style.standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton),
+                             "Mostrar ventana", menu)
         action_show.triggered.connect(self.mostrar_ventana.emit)
         menu.addAction(action_show)
 
-        action_connect = QAction("Reconectar")
+        action_connect = QAction(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
+                                "Reconectar", menu)
         action_connect.triggered.connect(self.conectar.emit)
         menu.addAction(action_connect)
 
         menu.addSeparator()
 
-        action_exit = QAction("Salir")
+        action_exit = QAction(style.standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton),
+                             "Salir", menu)
         action_exit.triggered.connect(self.salir.emit)
         menu.addAction(action_exit)
 
@@ -43,8 +47,12 @@ class TrayManager(QObject):
         self._tray.activated.connect(self._on_activated)
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason):
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.mostrar_ventana.emit()
+        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.mostrar_ventana.emit()
+        elif reason == QSystemTrayIcon.ActivationReason.Context:
+            pass
 
     def notify(self, title: str, message: str, duration_ms: int = 5000):
         if self._tray.supportsMessages():
@@ -53,9 +61,9 @@ class TrayManager(QObject):
     def set_icon_connected(self, connected: bool):
         style = QApplication.style()
         if connected:
-            icon = style.standardIcon(style.StandardPixmap.SP_DialogApplyButton)
+            icon = style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
         else:
-            icon = style.standardIcon(style.StandardPixmap.SP_DialogCancelButton)
+            icon = style.standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton)
         self._tray.setIcon(icon)
 
     def hide(self):
