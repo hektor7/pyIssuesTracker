@@ -59,7 +59,7 @@ Elige entre los temas disponibles: claro, oscuro, y variantes Fusion. El cambio 
 
 ## Redmine detrás de un portal SSO
 
-Si tu instancia de Redmine está protegida por un portal de autenticación corporativo (SSO), la API key por sí sola no será suficiente. La aplicación mostrará un mensaje indicando que se detectó el SSO y necesitas proporcionar credenciales de sesión adicionales.
+Si tu instancia de Redmine está protegida por un SSO, la API key por sí sola no será suficiente. La aplicación mostrará un mensaje indicando que se detectó el SSO y necesitas proporcionar credenciales de sesión adicionales.
 
 ### Cómo obtener las cookies del navegador
 
