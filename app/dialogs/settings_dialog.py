@@ -53,14 +53,22 @@ class SettingsDialog(QDialog):
         self._cookie_edit.setPlaceholderText(
             "cookie1=valor1; cookie2=valor2; _redmine_session=..."
         )
-        self._cookie_edit.setMaximumHeight(60)
+        self._cookie_edit.setMaximumHeight(55)
         form.addRow("Cookie:", self._cookie_edit)
+
+        self._headers_edit = QPlainTextEdit()
+        self._headers_edit.setPlaceholderText(
+            "X-Custom-Header: valor\nAuthorization: Bearer token"
+        )
+        self._headers_edit.setMaximumHeight(55)
+        form.addRow("Headers extra:", self._headers_edit)
 
         info = QLabel(
             "API key: Mi cuenta -> Mostrar API key.\n"
-            "Cookie: Si Redmine esta tras un SSO, abre sus URLs en el navegador,\n"
-            "inicia sesion, pulsa F12 -> Network -> recarga -> busca una peticion\n"
-            "a Redmine -> Request Headers -> copia TODO el valor de 'Cookie' aqui."
+            "Cookie: F12 -> Network -> recarga -> peticion a Redmine ->\n"
+            "        Request Headers -> copia el valor COMPLETO de 'Cookie'.\n"
+            "Headers extra: anade otros headers que necesite el SSO (uno por linea,\n"
+            "        formato 'Clave: Valor')."
         )
         info.setWordWrap(True)
         info.setStyleSheet("color: gray; font-size: 10pt;")
@@ -130,6 +138,7 @@ class SettingsDialog(QDialog):
         self._url_edit.setText(self._settings.redmine_url)
         self._apikey_edit.setText(self._settings.redmine_api_key)
         self._cookie_edit.setPlainText(self._settings.session_cookie)
+        self._headers_edit.setPlainText(self._settings.extra_headers)
         self._proxy_enabled_cb.setChecked(self._settings.proxy_enabled)
         idx = self._proxy_type_combo.findText(self._settings.proxy_type)
         if idx >= 0:
@@ -147,6 +156,7 @@ class SettingsDialog(QDialog):
         self._settings.redmine_url = self._url_edit.text().strip()
         self._settings.redmine_api_key = self._apikey_edit.text().strip()
         self._settings.session_cookie = self._cookie_edit.toPlainText().strip()
+        self._settings.extra_headers = self._headers_edit.toPlainText().strip()
         self._settings.proxy_enabled = self._proxy_enabled_cb.isChecked()
         self._settings.proxy_type = self._proxy_type_combo.currentText()
         self._settings.proxy_host = self._proxy_host_edit.text().strip()

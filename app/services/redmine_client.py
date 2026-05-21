@@ -68,11 +68,12 @@ class RedmineSSOError(RedmineError):
 
 class RedmineClient:
     def __init__(self, base_url: str, api_key: str, proxy_url: str | None = None,
-                 session_cookie: str = ""):
+                 session_cookie: str = "", extra_headers: dict[str, str] | None = None):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._proxy_url = proxy_url
         self._session_cookie = session_cookie
+        self._extra_headers = extra_headers or {}
         self._client: httpx.Client | None = None
 
     def _build_client(self) -> httpx.Client:
@@ -82,6 +83,7 @@ class RedmineClient:
         }
         if self._session_cookie:
             headers["Cookie"] = self._session_cookie
+        headers.update(self._extra_headers)
 
         return httpx.Client(
             base_url=self._base_url,

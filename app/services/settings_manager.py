@@ -59,6 +59,23 @@ class SettingsManager:
     def session_cookie(self, value: str):
         self._settings.setValue(KEY_REDMINE_SESSION_COOKIE, value.strip())
 
+    @property
+    def extra_headers(self) -> str:
+        return self._settings.value(KEY_REDMINE_EXTRA_HEADERS, "")
+
+    @extra_headers.setter
+    def extra_headers(self, value: str):
+        self._settings.setValue(KEY_REDMINE_EXTRA_HEADERS, value.strip())
+
+    def parse_extra_headers(self) -> dict[str, str]:
+        headers = {}
+        for line in self.extra_headers.splitlines():
+            line = line.strip()
+            if ":" in line:
+                key, _, val = line.partition(":")
+                headers[key.strip()] = val.strip()
+        return headers
+
     # ---- Proxy ----
 
     @property

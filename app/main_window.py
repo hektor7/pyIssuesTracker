@@ -165,6 +165,7 @@ class MainWindow(QMainWindow):
             self._settings.redmine_api_key,
             proxy_url,
             session_cookie=self._settings.session_cookie,
+            extra_headers=self._settings.parse_extra_headers(),
         )
 
         try:
