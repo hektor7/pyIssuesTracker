@@ -1,0 +1,20 @@
+[project]
+name = "pyissuestracker"
+version = "0.1.1"
+description = "Cliente de escritorio Redmine multiplataforma"
+requires-python = ">=3.9"
+dependencies = [
+    "PyQt6>=6.4,<7.0",
+    "httpx>=0.24,<1.0",
+    "packaging>=21.0",
+]
+
+[project.scripts]
+pyissuestracker = "main:main"
+
+[tool.setuptools.packages.find]
+include = ["app*", "main*"]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"

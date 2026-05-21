@@ -1,0 +1,278 @@
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+import httpx
+
+from app.utils.constants import REDMINE_REQUEST_TIMEOUT, REDMINE_PAGE_LIMIT
+
+
+@dataclass
+class RedmineProject:
+    id: int
+    name: str
+    identifier: str
+    parent_id: int | None = None
+    children: list["RedmineProject"] = field(default_factory=list)
+
+
+@dataclass
+class RedmineIssue:
+    id: int
+    subject: str
+    description: str = ""
+    start_date: str = ""
+    status_name: str = ""
+    status_id: int = 0
+    done_ratio: int = 0
+    project_id: int = 0
+    project_name: str = ""
+    assigned_to_id: int = 0
+    assigned_to_name: str = ""
+    author_name: str = ""
+    created_on: str = ""
+    updated_on: str = ""
+    tracker_name: str = ""
+    priority_name: str = ""
+
+
+@dataclass
+class RedmineStatus:
+    id: int
+    name: str
+    is_closed: bool = False
+
+
+@dataclass
+class RedmineMembership:
+    id: int
+    user_id: int
+    user_name: str
+
+
+class RedmineError(Exception):
+    pass
+
+
+class RedmineAuthError(RedmineError):
+    pass
+
+
+class RedmineConnectionError(RedmineError):
+    pass
+
+
+class RedmineClient:
+    def __init__(self, base_url: str, api_key: str, proxy_url: str | None = None):
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._proxy_url = proxy_url
+        self._client: httpx.Client | None = None
+
+    def _build_client(self) -> httpx.Client:
+        headers = {
+            "X-Redmine-API-Key": self._api_key,
+            "Content-Type": "application/json",
+        }
+        transport_kwargs = {}
+        if self._proxy_url:
+            transport_kwargs["proxy"] = self._proxy_url
+
+        return httpx.Client(
+            base_url=self._base_url,
+            headers=headers,
+            timeout=REDMINE_REQUEST_TIMEOUT,
+            transport=httpx.HTTPTransport(**transport_kwargs) if transport_kwargs else None,
+        )
+
+    @property
+    def client(self) -> httpx.Client:
+        if self._client is None:
+            self._client = self._build_client()
+        return self._client
+
+    def _get(self, path: str, params: dict | None = None) -> dict:
+        try:
+            resp = self.client.get(path, params=params or {})
+            if resp.status_code == 401:
+                raise RedmineAuthError("API key no válida (HTTP 401)")
+            if resp.status_code == 403:
+                raise RedmineAuthError("Acceso denegado (HTTP 403)")
+            if resp.status_code == 404:
+                raise RedmineError(f"Recurso no encontrado: {path}")
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.ConnectError as e:
+            raise RedmineConnectionError(f"No se pudo conectar a {self._base_url}: {e}")
+        except httpx.TimeoutException:
+            raise RedmineConnectionError(f"Timeout al conectar a {self._base_url}")
+
+    def _put(self, path: str, data: dict) -> dict:
+        try:
+            resp = self.client.put(path, json=data)
+            if resp.status_code == 401:
+                raise RedmineAuthError("API key no válida (HTTP 401)")
+            resp.raise_for_status()
+        except httpx.ConnectError as e:
+            raise RedmineConnectionError(f"No se pudo conectar a {self._base_url}: {e}")
+        except httpx.TimeoutException:
+            raise RedmineConnectionError(f"Timeout al conectar a {self._base_url}")
+        return {}
+
+    def test_connection(self) -> bool:
+        self._get("/users/current.json")
+        return True
+
+    # ---- Proyectos ----
+
+    def get_projects(self) -> list[RedmineProject]:
+        raw = self._get("/projects.json", params={"limit": 200})
+        projects_list = raw.get("projects", [])
+        projects: list[RedmineProject] = []
+        for p in projects_list:
+            projects.append(RedmineProject(
+                id=p["id"],
+                name=p["name"],
+                identifier=p["identifier"],
+                parent_id=p.get("parent", {}).get("id") if p.get("parent") else None,
+            ))
+        projects.sort(key=lambda x: x.name.lower())
+        return projects
+
+    # ---- Issues ----
+
+    def get_issues(
+        self,
+        project_id: int | None = None,
+        status_filter: str = "open",
+        assigned_to_id: int | str | None = None,
+        limit: int = REDMINE_PAGE_LIMIT,
+        offset: int = 0,
+    ) -> list[RedmineIssue]:
+        params: dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+            "sort": "updated_on:desc",
+            "include": "attachments",
+        }
+        if project_id:
+            params["project_id"] = project_id
+        if status_filter:
+            params["status_id"] = status_filter
+        if assigned_to_id and assigned_to_id != "me":
+            params["assigned_to_id"] = assigned_to_id
+        elif assigned_to_id == "me":
+            params["assigned_to_id"] = "me"
+
+        raw = self._get("/issues.json", params=params)
+        issues_raw = raw.get("issues", [])
+        issues: list[RedmineIssue] = []
+        for i in issues_raw:
+            iss = RedmineIssue(
+                id=i["id"],
+                subject=i.get("subject", ""),
+                description=i.get("description", ""),
+                start_date=i.get("start_date", ""),
+                status_name=i.get("status", {}).get("name", ""),
+                status_id=i.get("status", {}).get("id", 0),
+                done_ratio=i.get("done_ratio", 0),
+                project_id=i.get("project", {}).get("id", 0),
+                project_name=i.get("project", {}).get("name", ""),
+                assigned_to_id=i.get("assigned_to", {}).get("id", 0) if i.get("assigned_to") else 0,
+                assigned_to_name=i.get("assigned_to", {}).get("name", "") if i.get("assigned_to") else "",
+                author_name=i.get("author", {}).get("name", ""),
+                created_on=i.get("created_on", ""),
+                updated_on=i.get("updated_on", ""),
+                tracker_name=i.get("tracker", {}).get("name", ""),
+                priority_name=i.get("priority", {}).get("name", ""),
+            )
+            issues.append(iss)
+        return issues
+
+    # ---- Issue actions ----
+
+    def get_issue(self, issue_id: int, include_journals: bool = False) -> dict:
+        return self._get(f"/issues/{issue_id}.json", params={"include": "journals"} if include_journals else None)
+
+    def create_issue(self, project_id: int, subject: str, description: str = "",
+                     tracker_id: int = 1, priority_id: int = 2,
+                     assigned_to_id: int | None = None) -> dict:
+        payload: dict[str, Any] = {
+            "project_id": project_id,
+            "subject": subject,
+            "description": description,
+            "tracker_id": tracker_id,
+            "priority_id": priority_id,
+        }
+        if assigned_to_id:
+            payload["assigned_to_id"] = assigned_to_id
+        try:
+            resp = self.client.post("/issues.json", json={"issue": payload})
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.ConnectError as e:
+            raise RedmineConnectionError(str(e))
+
+    def update_issue(self, issue_id: int, **fields) -> dict:
+        try:
+            resp = self.client.put(f"/issues/{issue_id}.json", json={"issue": fields})
+            resp.raise_for_status()
+        except httpx.ConnectError as e:
+            raise RedmineConnectionError(str(e))
+        return {}
+
+    def assign_issue(self, issue_id: int, user_id: int) -> dict:
+        return self.update_issue(issue_id, assigned_to_id=user_id)
+
+    def complete_issue(self, issue_id: int, done_ratio: int = 100, status_id: int | None = None) -> dict:
+        fields = {"done_ratio": done_ratio}
+        if status_id:
+            fields["status_id"] = status_id
+        return self.update_issue(issue_id, **fields)
+
+    def reject_issue(self, issue_id: int, status_id: int, notes: str = "") -> dict:
+        fields: dict[str, Any] = {"status_id": status_id}
+        if notes:
+            fields["notes"] = notes
+        try:
+            resp = self.client.put(f"/issues/{issue_id}.json", json={"issue": fields})
+            resp.raise_for_status()
+        except httpx.ConnectError as e:
+            raise RedmineConnectionError(str(e))
+        return {}
+
+    # ---- Estados ----
+
+    def get_issue_statuses(self) -> list[RedmineStatus]:
+        raw = self._get("/issue_statuses.json")
+        statuses = []
+        for s in raw.get("issue_statuses", []):
+            statuses.append(RedmineStatus(
+                id=s["id"],
+                name=s["name"],
+                is_closed=s.get("is_closed", False),
+            ))
+        return statuses
+
+    # ---- Miembros del proyecto ----
+
+    def get_project_memberships(self, project_id: int) -> list[RedmineMembership]:
+        raw = self._get(f"/projects/{project_id}/memberships.json", params={"limit": 200})
+        memberships = []
+        for m in raw.get("memberships", []):
+            user = m.get("user", {})
+            memberships.append(RedmineMembership(
+                id=m["id"],
+                user_id=user.get("id", 0),
+                user_name=user.get("name", ""),
+            ))
+        return memberships
+
+    def get_current_user_id(self) -> int:
+        data = self._get("/users/current.json")
+        return data["user"]["id"]
+
+    def close(self):
+        if self._client is not None:
+            self._client.close()
+            self._client = None
