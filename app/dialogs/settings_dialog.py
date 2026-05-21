@@ -72,7 +72,7 @@ class SettingsDialog(QDialog):
         form.setSpacing(8)
 
         self._proxy_type_combo = QComboBox()
-        self._proxy_type_combo.addItems(["http", "socks5"])
+        self._proxy_type_combo.addItems(["http", "https", "socks5"])
         form.addRow("Tipo:", self._proxy_type_combo)
 
         self._proxy_host_edit = QLineEdit()
