@@ -47,7 +47,10 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def _setup_ui(self):
+        self.setObjectName("main_window")
+
         central = QWidget()
+        central.setObjectName("central_widget")
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -58,36 +61,48 @@ class MainWindow(QMainWindow):
         self._connect_toolbar_signals()
 
         self._filter_bar = FilterBar()
+        self._filter_bar.setObjectName("filter_bar")
         self._filter_bar.proyecto_cambiado.connect(self._on_filter_project_changed)
         self._filter_bar.estado_cambiado.connect(self._on_filter_status_changed)
         self._filter_bar.fijar_cambiado.connect(self._on_filter_fixed_changed)
         layout.addWidget(self._filter_bar)
 
         self._task_table = TaskTable()
+        self._task_table.setObjectName("task_table")
         self._task_table.tarea_doble_click.connect(self._editar_tarea)
         self._task_table.tarea_abrir_url.connect(self._abrir_url_redmine)
         layout.addWidget(self._task_table)
 
         self._status_indicator = StatusIndicator()
+        self._status_indicator.setObjectName("status_indicator")
         self.setStatusBar(QStatusBar(self))
         self.statusBar().addPermanentWidget(self._status_indicator)
 
     def _setup_menu(self):
         mb = self.menuBar()
+        mb.setObjectName("main_menu_bar")
 
-        archivo_menu = mb.addMenu("Archivo")
-        action_config = QAction("Configuración...")
+        archivo_menu = mb.addMenu("&Archivo")
+        archivo_menu.setObjectName("menu_archivo")
+
+        action_config = QAction("&Configuracion...", self)
+        action_config.setShortcut("Ctrl+,")
         action_config.triggered.connect(self._abrir_configuracion)
         archivo_menu.addAction(action_config)
 
-        action_conectar = QAction("Conectar")
+        action_conectar = QAction("&Conectar", self)
+        action_conectar.setShortcut("Ctrl+R")
         action_conectar.triggered.connect(self._conectar_redmine)
         archivo_menu.addAction(action_conectar)
 
         archivo_menu.addSeparator()
-        action_salir = QAction("Salir")
+
+        action_salir = QAction("&Salir", self)
+        action_salir.setShortcut("Ctrl+Q")
         action_salir.triggered.connect(self._salir)
         archivo_menu.addAction(action_salir)
+
+        self._apply_menu_style()
 
     def _connect_toolbar_signals(self):
         self._toolbar.nuevo_clicked.connect(self._nueva_tarea)
@@ -96,6 +111,15 @@ class MainWindow(QMainWindow):
         self._toolbar.completar_clicked.connect(self._completar_tarea)
         self._toolbar.rechazar_clicked.connect(self._rechazar_tarea)
         self._toolbar.refrescar_clicked.connect(self._cargar_issues)
+        self._toolbar.configuracion_clicked.connect(self._abrir_configuracion)
+
+    def _apply_menu_style(self):
+        self.menuBar().setStyleSheet("""
+            QMenuBar { background: palette(window); padding: 2px; }
+            QMenuBar::item:selected { background: palette(highlight); }
+            QMenu { background: palette(window); border: 1px solid palette(mid); }
+            QMenu::item:selected { background: palette(highlight); color: palette(highlighted-text); }
+        """)
 
     # ================================================================
     # Tray

@@ -1,8 +1,8 @@
-from PyQt6.QtCore import pyqtSignal, Qt, QUrl
+from PyQt6.QtCore import pyqtSignal, Qt, QUrl, QSize
 from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QPushButton, QToolTip,
+    QPushButton, QToolButton, QToolTip, QStyle, QApplication,
 )
 
 
@@ -84,9 +84,12 @@ class TaskTable(QTableWidget):
                 progress_item.setForeground(Qt.GlobalColor.darkYellow)
             self.setItem(row, self.COL_PROGRESS, progress_item)
 
-            btn = QPushButton("🔗")
-            btn.setFixedSize(32, 24)
+            btn = QToolButton()
+            icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+            btn.setIcon(icon)
+            btn.setIconSize(QSize(16, 16))
             btn.setToolTip("Abrir en Redmine")
+            btn.setAutoRaise(True)
             issue_id = issue["id"]
             issue_url = issue.get("url", "")
             btn.clicked.connect(lambda checked, iid=issue_id, url=issue_url: self.tarea_abrir_url.emit(iid, url))
