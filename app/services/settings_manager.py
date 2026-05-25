@@ -1,3 +1,5 @@
+import json
+
 from PyQt6.QtCore import QSettings
 
 from app.utils.constants import (
@@ -52,9 +54,26 @@ class SettingsManager:
     def redmine_configured(self) -> bool:
         return bool(self.redmine_url.strip()) and bool(self.redmine_api_key.strip())
 
+    @staticmethod
+    def _parse_cookie_json(raw: str) -> str | None:
+        """Convierte el JSON de Firefox DevTools a formato Cookie header."""
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        # Busca el primer dict anidado (las cookies) sin importar la clave raíz
+        for val in data.values():
+            if isinstance(val, dict):
+                pairs = [f"{k}={v}" for k, v in val.items()]
+                return "; ".join(pairs)
+        return None
+
     @property
     def session_cookie(self) -> str:
         raw = self._settings.value(KEY_REDMINE_SESSION_COOKIE, "")
+        parsed = self._parse_cookie_json(raw)
+        if parsed is not None:
+            return parsed
         # Las cabeceras HTTP no admiten saltos de línea; normalizamos a una sola línea
         return " ".join(raw.splitlines()).strip()
 
