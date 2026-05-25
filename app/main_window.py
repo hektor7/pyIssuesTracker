@@ -36,6 +36,11 @@ class MainWindow(QMainWindow):
         self._priorities: list[tuple[int, str]] = []
         self._current_user_id: int = 0
 
+        self._known_issue_ids: set[int] = set()
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._check_new_issues)
+        self._poll_interval_ms = 300000
+
         self.setWindowTitle(f"{APP_DISPLAY_NAME} v{__version__}")
         self.setMinimumSize(900, 550)
         self._setup_ui()
@@ -183,6 +188,7 @@ class MainWindow(QMainWindow):
             self._cargar_estados()
             self._cargar_priorities()
             self._cargar_issues()
+            self._update_poll_timer()
         except RedmineAuthError as e:
             self._status_indicator.set_connected(False, "Error de autenticación")
             self._tray.set_icon_connected(False)
@@ -272,7 +278,7 @@ class MainWindow(QMainWindow):
         except RedmineError:
             self._filter_bar.populate_assignees([])
 
-    def _cargar_issues(self):
+    def _cargar_issues(self, *, track_known: bool = True):
         if not self._redmine:
             return
         project_id = self._filter_bar.selected_project_id or None
@@ -320,6 +326,8 @@ class MainWindow(QMainWindow):
             ]
             self._task_table.set_issues(issues_dict)
             self._status_indicator.set_connected(True)
+            if track_known:
+                self._known_issue_ids = {iss["id"] for iss in issues_dict}
         except RedmineError as e:
             self._status_indicator.set_connected(False, str(e))
 
@@ -460,6 +468,7 @@ class MainWindow(QMainWindow):
         self._cargar_categorias_proyecto(project_id)
         self._cargar_miembros_proyecto(project_id)
         self._cargar_issues()
+        self._update_poll_timer()
 
     def _on_filter_status_changed(self, status: str):
         self._settings.filter_status = status
@@ -482,6 +491,48 @@ class MainWindow(QMainWindow):
         if fixed:
             self._settings.filter_project_id = self._filter_bar.selected_project_id
             self._settings.filter_project_name = self._filter_bar.selected_project_name
+
+    def _update_poll_timer(self):
+        project_id = self._filter_bar.selected_project_id
+        if project_id and self._redmine:
+            if not self._poll_timer.isActive():
+                self._poll_timer.start(self._poll_interval_ms)
+        else:
+            self._poll_timer.stop()
+
+    def _check_new_issues(self):
+        if not self._redmine or not self._filter_bar.selected_project_id:
+            return
+        try:
+            issues = self._redmine.get_issues(
+                project_id=self._filter_bar.selected_project_id,
+                status_filter=self._filter_bar.selected_status,
+                category_id=self._filter_bar.selected_category or None,
+                priority_id=self._filter_bar.selected_priority or None,
+            )
+            current_ids = {iss.id for iss in issues}
+            new_ids = current_ids - self._known_issue_ids
+            if new_ids:
+                new_issues = [iss for iss in issues if iss.id in new_ids]
+                self._notify_new_issues(new_issues)
+                self._known_issue_ids = current_ids
+                self._cargar_issues(track_known=False)
+        except RedmineError:
+            pass
+
+    def _notify_new_issues(self, new_issues: list):
+        count = len(new_issues)
+        if count == 1:
+            title = "Nueva tarea"
+            message = f"#{new_issues[0].id}: {new_issues[0].subject}"
+        else:
+            title = f"{count} nuevas tareas"
+            subjects = ", ".join(f"#{iss.id}" for iss in new_issues[:3])
+            if count > 3:
+                subjects += f" y {count - 3} más"
+            message = subjects
+        self._tray.notify(APP_DISPLAY_NAME, message, duration_ms=8000)
+        self._mostrar_ventana()
 
     # ================================================================
     # Configuración
