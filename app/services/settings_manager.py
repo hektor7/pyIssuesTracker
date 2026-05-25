@@ -10,7 +10,7 @@ from app.utils.constants import (
     KEY_REDMINE_SESSION_COOKIE,
     KEY_REDMINE_EXTRA_HEADERS,
     KEY_FILTER_PRIORITY,
-    KEY_FILTER_TRACKER,
+    KEY_FILTER_CATEGORY,
     KEY_FILTER_ASSIGNED_TO,
     KEY_PROXY_ENABLED,
     KEY_PROXY_TYPE,
@@ -214,13 +214,13 @@ class SettingsManager:
         self._settings.setValue(KEY_FILTER_PRIORITY, value)
 
     @property
-    def filter_tracker(self) -> int:
-        val = self._settings.value(KEY_FILTER_TRACKER, 0)
+    def filter_category(self) -> int:
+        val = self._settings.value(KEY_FILTER_CATEGORY, 0)
         return int(val) if val else 0
 
-    @filter_tracker.setter
-    def filter_tracker(self, value: int):
-        self._settings.setValue(KEY_FILTER_TRACKER, value)
+    @filter_category.setter
+    def filter_category(self, value: int):
+        self._settings.setValue(KEY_FILTER_CATEGORY, value)
 
     @property
     def filter_assigned_to(self) -> int:

@@ -31,9 +31,9 @@ class MainWindow(QMainWindow):
         self._redmine: RedmineClient | None = None
         self._tray: TrayManager | None = None
         self._projects: list[tuple[int, str]] = []
+        self._project_hierarchy: dict[int, int | None] = {}
         self._statuses: list[tuple[int, str]] = []
         self._priorities: list[tuple[int, str]] = []
-        self._trackers: list[tuple[int, str]] = []
         self._current_user_id: int = 0
 
         self.setWindowTitle(f"{APP_DISPLAY_NAME} v{__version__}")
@@ -68,7 +68,7 @@ class MainWindow(QMainWindow):
         self._filter_bar.proyecto_cambiado.connect(self._on_filter_project_changed)
         self._filter_bar.estado_cambiado.connect(self._on_filter_status_changed)
         self._filter_bar.prioridad_cambiada.connect(self._on_filter_priority_changed)
-        self._filter_bar.tracker_cambiado.connect(self._on_filter_tracker_changed)
+        self._filter_bar.categoria_cambiada.connect(self._on_filter_category_changed)
         self._filter_bar.asignado_cambiado.connect(self._on_filter_assigned_changed)
         self._filter_bar.fijar_cambiado.connect(self._on_filter_fixed_changed)
         layout.addWidget(self._filter_bar)
@@ -182,7 +182,6 @@ class MainWindow(QMainWindow):
             self._cargar_proyectos()
             self._cargar_estados()
             self._cargar_priorities()
-            self._cargar_trackers()
             self._cargar_issues()
         except RedmineAuthError as e:
             self._status_indicator.set_connected(False, "Error de autenticación")
@@ -214,18 +213,20 @@ class MainWindow(QMainWindow):
         try:
             projects = self._redmine.get_projects()
             self._projects = [(p.id, p.name) for p in projects]
-            self._filter_bar.populate_projects(self._projects)
+            self._project_hierarchy = {p.id: p.parent_id for p in projects}
+            self._filter_bar.populate_projects(self._projects, self._project_hierarchy)
 
             if self._settings.filter_fixed and self._settings.filter_project_id:
                 self._filter_bar.select_project(
                     self._settings.filter_project_id,
                     self._settings.filter_project_name,
                 )
+                self._cargar_categorias_proyecto(self._settings.filter_project_id)
                 self._cargar_miembros_proyecto(self._settings.filter_project_id)
             self._filter_bar.set_fixed(self._settings.filter_fixed)
             self._filter_bar.set_status(self._settings.filter_status)
             self._filter_bar.set_priority(self._settings.filter_priority)
-            self._filter_bar.set_tracker(self._settings.filter_tracker)
+            self._filter_bar.set_category(self._settings.filter_category)
             self._filter_bar.set_assigned_to(self._settings.filter_assigned_to)
         except RedmineError:
             pass
@@ -249,15 +250,16 @@ class MainWindow(QMainWindow):
         except RedmineError:
             self._priorities = []
 
-    def _cargar_trackers(self):
-        if not self._redmine:
+    def _cargar_categorias_proyecto(self, project_id: int):
+        if not self._redmine or not project_id:
+            self._filter_bar.populate_categories([])
             return
         try:
-            trackers = self._redmine.get_trackers()
-            self._trackers = [(t.id, t.name) for t in trackers]
-            self._filter_bar.populate_trackers(self._trackers)
+            cats = self._redmine.get_project_issue_categories(project_id)
+            categories = [(c.id, c.name) for c in cats]
+            self._filter_bar.populate_categories(categories)
         except RedmineError:
-            self._trackers = []
+            self._filter_bar.populate_categories([])
 
     def _cargar_miembros_proyecto(self, project_id: int):
         if not self._redmine or not project_id:
@@ -276,7 +278,7 @@ class MainWindow(QMainWindow):
         project_id = self._filter_bar.selected_project_id or None
         status_filter = self._filter_bar.selected_status
         priority_id = self._filter_bar.selected_priority or None
-        tracker_id = self._filter_bar.selected_tracker or None
+        category_id = self._filter_bar.selected_category or None
 
         assigned_raw = self._filter_bar.selected_assigned_to
         if assigned_raw == 0:
@@ -292,7 +294,7 @@ class MainWindow(QMainWindow):
             issues = self._redmine.get_issues(
                 project_id=project_id,
                 status_filter=status_filter,
-                tracker_id=tracker_id,
+                category_id=category_id,
                 priority_id=priority_id,
                 assigned_to_id=assigned_to_id,
             )
@@ -455,6 +457,7 @@ class MainWindow(QMainWindow):
         if self._settings.filter_fixed:
             self._settings.filter_project_id = project_id
             self._settings.filter_project_name = project_name
+        self._cargar_categorias_proyecto(project_id)
         self._cargar_miembros_proyecto(project_id)
         self._cargar_issues()
 
@@ -466,8 +469,8 @@ class MainWindow(QMainWindow):
         self._settings.filter_priority = priority_id
         self._cargar_issues()
 
-    def _on_filter_tracker_changed(self, tracker_id: int):
-        self._settings.filter_tracker = tracker_id
+    def _on_filter_category_changed(self, category_id: int):
+        self._settings.filter_category = category_id
         self._cargar_issues()
 
     def _on_filter_assigned_changed(self, assigned_to_id: int):

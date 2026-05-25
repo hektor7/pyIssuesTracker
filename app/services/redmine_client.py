@@ -53,9 +53,10 @@ class RedminePriority:
 
 
 @dataclass
-class RedmineTracker:
+class RedmineIssueCategory:
     id: int
     name: str
+    project_id: int = 0
 
 
 @dataclass
@@ -196,7 +197,7 @@ class RedmineClient:
         self,
         project_id: int | None = None,
         status_filter: str = "open",
-        tracker_id: int | None = None,
+        category_id: int | None = None,
         priority_id: int | None = None,
         assigned_to_id: int | str | None = None,
         limit: int = REDMINE_PAGE_LIMIT,
@@ -212,8 +213,8 @@ class RedmineClient:
             params["project_id"] = project_id
         if status_filter:
             params["status_id"] = status_filter
-        if tracker_id:
-            params["tracker_id"] = tracker_id
+        if category_id:
+            params["category_id"] = category_id
         if priority_id:
             params["priority_id"] = priority_id
         if assigned_to_id == "!*":
@@ -311,15 +312,16 @@ class RedmineClient:
             ))
         return priorities
 
-    def get_trackers(self) -> list[RedmineTracker]:
-        raw = self._get("/trackers.json")
-        trackers = []
-        for t in raw.get("trackers", []):
-            trackers.append(RedmineTracker(
-                id=t["id"],
-                name=t["name"],
+    def get_project_issue_categories(self, project_id: int) -> list[RedmineIssueCategory]:
+        raw = self._get(f"/projects/{project_id}/issue_categories.json")
+        categories = []
+        for c in raw.get("issue_categories", []):
+            categories.append(RedmineIssueCategory(
+                id=c["id"],
+                name=c["name"],
+                project_id=project_id,
             ))
-        return trackers
+        return categories
 
     # ---- Miembros del proyecto ----
 

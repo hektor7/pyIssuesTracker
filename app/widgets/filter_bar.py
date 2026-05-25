@@ -9,13 +9,14 @@ class FilterBar(QWidget):
     proyecto_cambiado = pyqtSignal(int, str)
     estado_cambiado = pyqtSignal(str)
     prioridad_cambiada = pyqtSignal(int)
-    tracker_cambiado = pyqtSignal(int)
+    categoria_cambiada = pyqtSignal(int)
     asignado_cambiado = pyqtSignal(int)
     fijar_cambiado = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._projects: list[tuple[int, str]] = []
+        self._project_lookup: dict[int, str] = {}
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(8)
@@ -63,34 +64,49 @@ class FilterBar(QWidget):
         layout.addSpacing(16)
         layout.addWidget(QLabel("Categoría:"))
 
-        self._tracker_combo = QComboBox()
-        self._tracker_combo.setMinimumWidth(120)
-        self._tracker_combo.addItem("(Todas)", 0)
-        self._tracker_combo.currentIndexChanged.connect(self._on_tracker_changed)
-        layout.addWidget(self._tracker_combo)
+        self._category_combo = QComboBox()
+        self._category_combo.setMinimumWidth(120)
+        self._category_combo.addItem("(Todas)", 0)
+        self._category_combo.currentIndexChanged.connect(self._on_category_changed)
+        layout.addWidget(self._category_combo)
 
         layout.addSpacing(16)
         layout.addWidget(QLabel("Asignado a:"))
 
         self._assigned_combo = QComboBox()
+        self._assigned_combo.setEditable(True)
+        self._assigned_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self._assigned_combo.setMinimumWidth(150)
-        self._assigned_combo.addItem("(Todos)", 0)
-        self._assigned_combo.addItem("Sin asignar", -1)
-        self._assigned_combo.addItem("Asignado a mí", -2)
         self._assigned_combo.currentIndexChanged.connect(self._on_assigned_changed)
+        self._assigned_combo.lineEdit().returnPressed.connect(self._on_assigned_enter_pressed)
         layout.addWidget(self._assigned_combo)
+
+        self._assigned_completer = QCompleter([], self)
+        self._assigned_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._assigned_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._assigned_combo.setCompleter(self._assigned_completer)
 
         layout.addStretch()
 
-    def populate_projects(self, projects: list[tuple[int, str]]):
+    def populate_projects(self, projects: list[tuple[int, str]], hierarchy: dict[int, int | None] | None = None):
         self._projects = projects
+        self._project_lookup = {pid: name for pid, name in projects}
         self._project_combo.blockSignals(True)
         self._project_combo.clear()
         self._project_combo.addItem("(Todos los proyectos)", 0)
         names = []
         for pid, name in projects:
-            prefix = ""
-            self._project_combo.addItem(f"{prefix}{name}", pid)
+            indent = ""
+            if hierarchy:
+                depth = 0
+                parent = hierarchy.get(pid)
+                while parent:
+                    depth += 1
+                    parent = hierarchy.get(parent)
+                indent = "  " * depth
+            display = f"{indent}{name}"
+            self._project_combo.addItem(display, pid)
+            self._project_combo.setItemData(self._project_combo.count() - 1, name, Qt.ItemDataRole.ToolTipRole)
             names.append(name)
         self._completer.model().setStringList(names)
         self._project_combo.blockSignals(False)
@@ -120,18 +136,18 @@ class FilterBar(QWidget):
                 break
         self._priority_combo.blockSignals(False)
 
-    def populate_trackers(self, trackers: list[tuple[int, str]]):
-        self._tracker_combo.blockSignals(True)
-        current_data = self._tracker_combo.currentData()
-        self._tracker_combo.clear()
-        self._tracker_combo.addItem("(Todas)", 0)
-        for tid, name in trackers:
-            self._tracker_combo.addItem(name, tid)
-        for i in range(self._tracker_combo.count()):
-            if self._tracker_combo.itemData(i) == current_data:
-                self._tracker_combo.setCurrentIndex(i)
+    def populate_categories(self, categories: list[tuple[int, str]]):
+        self._category_combo.blockSignals(True)
+        current_data = self._category_combo.currentData()
+        self._category_combo.clear()
+        self._category_combo.addItem("(Todas)", 0)
+        for cid, name in categories:
+            self._category_combo.addItem(name, cid)
+        for i in range(self._category_combo.count()):
+            if self._category_combo.itemData(i) == current_data:
+                self._category_combo.setCurrentIndex(i)
                 break
-        self._tracker_combo.blockSignals(False)
+        self._category_combo.blockSignals(False)
 
     def populate_assignees(self, assignees: list[tuple[int, str]]):
         self._assigned_combo.blockSignals(True)
@@ -140,12 +156,15 @@ class FilterBar(QWidget):
         self._assigned_combo.addItem("(Todos)", 0)
         self._assigned_combo.addItem("Sin asignar", -1)
         self._assigned_combo.addItem("Asignado a mí", -2)
+        names = []
         for uid, name in assignees:
             self._assigned_combo.addItem(name, uid)
+            names.append(name)
         for i in range(self._assigned_combo.count()):
             if self._assigned_combo.itemData(i) == current_data:
                 self._assigned_combo.setCurrentIndex(i)
                 break
+        self._assigned_completer.model().setStringList(names)
         self._assigned_combo.blockSignals(False)
 
     def set_status(self, status: str):
@@ -160,10 +179,10 @@ class FilterBar(QWidget):
                 self._priority_combo.setCurrentIndex(i)
                 return
 
-    def set_tracker(self, tracker_id: int):
-        for i in range(self._tracker_combo.count()):
-            if self._tracker_combo.itemData(i) == tracker_id:
-                self._tracker_combo.setCurrentIndex(i)
+    def set_category(self, category_id: int):
+        for i in range(self._category_combo.count()):
+            if self._category_combo.itemData(i) == category_id:
+                self._category_combo.setCurrentIndex(i)
                 return
 
     def set_assigned_to(self, assigned_to_id: int):
@@ -182,7 +201,7 @@ class FilterBar(QWidget):
 
     @property
     def selected_project_name(self) -> str:
-        return self._project_combo.currentText()
+        return self._project_lookup.get(self.selected_project_id, "")
 
     @property
     def selected_status(self) -> str:
@@ -193,8 +212,8 @@ class FilterBar(QWidget):
         return self._priority_combo.currentData() or 0
 
     @property
-    def selected_tracker(self) -> int:
-        return self._tracker_combo.currentData() or 0
+    def selected_category(self) -> int:
+        return self._category_combo.currentData() or 0
 
     @property
     def selected_assigned_to(self) -> int:
@@ -208,7 +227,7 @@ class FilterBar(QWidget):
         if index < 0:
             return
         pid = self._project_combo.itemData(index) or 0
-        name = self._project_combo.itemText(index)
+        name = self._project_lookup.get(pid, "")
         self.proyecto_cambiado.emit(pid, name)
 
     def _on_enter_pressed(self):
@@ -230,10 +249,21 @@ class FilterBar(QWidget):
         priority = self._priority_combo.currentData() or 0
         self.prioridad_cambiada.emit(priority)
 
-    def _on_tracker_changed(self, index: int):
-        tracker = self._tracker_combo.currentData() or 0
-        self.tracker_cambiado.emit(tracker)
+    def _on_category_changed(self, index: int):
+        category = self._category_combo.currentData() or 0
+        self.categoria_cambiada.emit(category)
 
     def _on_assigned_changed(self, index: int):
         assigned = self._assigned_combo.currentData() or 0
         self.asignado_cambiado.emit(assigned)
+
+    def _on_assigned_enter_pressed(self):
+        text = self._assigned_combo.currentText().strip().lower()
+        for i in range(self._assigned_combo.count()):
+            if self._assigned_combo.itemText(i).lower() == text:
+                self._assigned_combo.setCurrentIndex(i)
+                return
+        for i in range(self._assigned_combo.count()):
+            if text in self._assigned_combo.itemText(i).lower():
+                self._assigned_combo.setCurrentIndex(i)
+                return
