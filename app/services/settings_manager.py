@@ -54,7 +54,9 @@ class SettingsManager:
 
     @property
     def session_cookie(self) -> str:
-        return self._settings.value(KEY_REDMINE_SESSION_COOKIE, "")
+        raw = self._settings.value(KEY_REDMINE_SESSION_COOKIE, "")
+        # Las cabeceras HTTP no admiten saltos de línea; normalizamos a una sola línea
+        return " ".join(raw.splitlines()).strip()
 
     @session_cookie.setter
     def session_cookie(self, value: str):
