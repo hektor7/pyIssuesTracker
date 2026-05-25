@@ -32,7 +32,9 @@ class RedmineIssue:
     author_name: str = ""
     created_on: str = ""
     updated_on: str = ""
+    tracker_id: int = 0
     tracker_name: str = ""
+    priority_id: int = 0
     priority_name: str = ""
 
 
@@ -41,6 +43,19 @@ class RedmineStatus:
     id: int
     name: str
     is_closed: bool = False
+
+
+@dataclass
+class RedminePriority:
+    id: int
+    name: str
+    is_default: bool = False
+
+
+@dataclass
+class RedmineTracker:
+    id: int
+    name: str
 
 
 @dataclass
@@ -181,6 +196,8 @@ class RedmineClient:
         self,
         project_id: int | None = None,
         status_filter: str = "open",
+        tracker_id: int | None = None,
+        priority_id: int | None = None,
         assigned_to_id: int | str | None = None,
         limit: int = REDMINE_PAGE_LIMIT,
         offset: int = 0,
@@ -195,10 +212,16 @@ class RedmineClient:
             params["project_id"] = project_id
         if status_filter:
             params["status_id"] = status_filter
-        if assigned_to_id and assigned_to_id != "me":
-            params["assigned_to_id"] = assigned_to_id
+        if tracker_id:
+            params["tracker_id"] = tracker_id
+        if priority_id:
+            params["priority_id"] = priority_id
+        if assigned_to_id == "!*":
+            params["assigned_to_id"] = "!*"
         elif assigned_to_id == "me":
             params["assigned_to_id"] = "me"
+        elif assigned_to_id:
+            params["assigned_to_id"] = assigned_to_id
 
         raw = self._get("/issues.json", params=params)
         issues_raw = raw.get("issues", [])
@@ -219,7 +242,9 @@ class RedmineClient:
                 author_name=i.get("author", {}).get("name", ""),
                 created_on=i.get("created_on", ""),
                 updated_on=i.get("updated_on", ""),
+                tracker_id=i.get("tracker", {}).get("id", 0),
                 tracker_name=i.get("tracker", {}).get("name", ""),
+                priority_id=i.get("priority", {}).get("id", 0),
                 priority_name=i.get("priority", {}).get("name", ""),
             )
             issues.append(iss)
@@ -274,6 +299,27 @@ class RedmineClient:
                 is_closed=s.get("is_closed", False),
             ))
         return statuses
+
+    def get_issue_priorities(self) -> list[RedminePriority]:
+        raw = self._get("/enumerations/issue_priorities.json")
+        priorities = []
+        for p in raw.get("issue_priorities", []):
+            priorities.append(RedminePriority(
+                id=p["id"],
+                name=p["name"],
+                is_default=p.get("is_default", False),
+            ))
+        return priorities
+
+    def get_trackers(self) -> list[RedmineTracker]:
+        raw = self._get("/trackers.json")
+        trackers = []
+        for t in raw.get("trackers", []):
+            trackers.append(RedmineTracker(
+                id=t["id"],
+                name=t["name"],
+            ))
+        return trackers
 
     # ---- Miembros del proyecto ----
 

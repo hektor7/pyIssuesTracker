@@ -9,6 +9,9 @@ from app.utils.constants import (
     KEY_REDMINE_API_KEY,
     KEY_REDMINE_SESSION_COOKIE,
     KEY_REDMINE_EXTRA_HEADERS,
+    KEY_FILTER_PRIORITY,
+    KEY_FILTER_TRACKER,
+    KEY_FILTER_ASSIGNED_TO,
     KEY_PROXY_ENABLED,
     KEY_PROXY_TYPE,
     KEY_PROXY_HOST,
@@ -200,6 +203,33 @@ class SettingsManager:
     @filter_status.setter
     def filter_status(self, value: str):
         self._settings.setValue(KEY_FILTER_STATUS, value)
+
+    @property
+    def filter_priority(self) -> int:
+        val = self._settings.value(KEY_FILTER_PRIORITY, 0)
+        return int(val) if val else 0
+
+    @filter_priority.setter
+    def filter_priority(self, value: int):
+        self._settings.setValue(KEY_FILTER_PRIORITY, value)
+
+    @property
+    def filter_tracker(self) -> int:
+        val = self._settings.value(KEY_FILTER_TRACKER, 0)
+        return int(val) if val else 0
+
+    @filter_tracker.setter
+    def filter_tracker(self, value: int):
+        self._settings.setValue(KEY_FILTER_TRACKER, value)
+
+    @property
+    def filter_assigned_to(self) -> int:
+        val = self._settings.value(KEY_FILTER_ASSIGNED_TO, 0)
+        return int(val) if val else 0
+
+    @filter_assigned_to.setter
+    def filter_assigned_to(self, value: int):
+        self._settings.setValue(KEY_FILTER_ASSIGNED_TO, value)
 
     # ---- Ventana ----
 
