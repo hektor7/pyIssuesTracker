@@ -366,6 +366,7 @@ class MainWindow(QMainWindow):
             projects=self._projects,
             trackers=self._trackers,
             priorities=self._priorities,
+            statuses=self._statuses,
             initial_categories=initial_categories,
             redmine_client=self._redmine,
         )
@@ -427,6 +428,7 @@ class MainWindow(QMainWindow):
                 projects=self._projects,
                 trackers=self._trackers,
                 priorities=self._priorities,
+                statuses=self._statuses,
                 initial_categories=initial_categories,
                 redmine_client=self._redmine,
                 task_data=task_data,

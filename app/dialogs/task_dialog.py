@@ -18,6 +18,7 @@ class TaskDialog(QDialog):
     def __init__(self, parent=None, projects: list[tuple[int, str]] | None = None,
                  trackers: list[tuple[int, str]] | None = None,
                  priorities: list[tuple[int, str]] | None = None,
+                 statuses: list[tuple[int, str]] | None = None,
                  initial_categories: list[tuple[int, str]] | None = None,
                  redmine_client: RedmineClient | None = None,
                  task_data: dict | None = None):
@@ -25,6 +26,7 @@ class TaskDialog(QDialog):
         self._projects = projects or []
         self._trackers = trackers or []
         self._priorities = priorities or []
+        self._statuses = statuses or []
         self._initial_categories = initial_categories or []
         self._redmine = redmine_client
         self._task_data = task_data or {}
@@ -109,7 +111,8 @@ class TaskDialog(QDialog):
         # Estado (solo edición)
         if self._is_edit:
             self._status_combo = QComboBox()
-            # Los estados se cargarán en _populate_fields desde task_data
+            for sid, sname in self._statuses:
+                self._status_combo.addItem(sname, sid)
             details_form.addRow("Estado:", self._status_combo)
 
         # Prioridad (buscable)
@@ -247,6 +250,11 @@ class TaskDialog(QDialog):
         # Prioridad
         prior_id = self._task_data.get("priority_id", 2)
         self._set_combo_data(self._prior_combo, prior_id)
+
+        # Estado
+        if hasattr(self, '_status_combo'):
+            sid = self._task_data.get("status_id", 0)
+            self._set_combo_data(self._status_combo, sid)
 
         # Categoría - se cargará dinámicamente al cambiar proyecto
         # pero establecemos el valor inicial para que _populate_categories lo seleccione
