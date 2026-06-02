@@ -3,6 +3,7 @@ from PyQt6.QtGui import QDesktopServices, QIcon, QColor
 from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QPushButton, QToolButton, QToolTip, QStyle, QApplication,
+    QProgressBar,
 )
 
 
@@ -33,6 +34,7 @@ class TaskTable(QTableWidget):
         self.setAlternatingRowColors(True)
         self.verticalHeader().setVisible(False)
         self.setShowGrid(True)
+        self.verticalHeader().setDefaultSectionSize(28)
 
         header = self.horizontalHeader()
         header.setStretchLastSection(False)
@@ -60,9 +62,75 @@ class TaskTable(QTableWidget):
             return self._BG_URGENTE
         return None
 
+    def _create_progress_bar(self, progress: int, bg_color: QColor | None = None) -> QProgressBar:
+        """Crea una QProgressBar estilizada según el progreso y el color de fondo de prioridad."""
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(progress)
+        bar.setTextVisible(True)
+        bar.setFormat(f"{progress}%")
+        bar.setFixedHeight(20)
+
+        if bg_color:
+            # Fondo rojo para prioridades altas
+            bar.setStyleSheet(f"""
+                QProgressBar {{
+                    background-color: {bg_color.name()};
+                    border: 1px solid #555;
+                    border-radius: 2px;
+                    text-align: center;
+                    color: white;
+                }}
+                QProgressBar::chunk {{
+                    background-color: #c62828;
+                    border-radius: 1px;
+                }}
+            """)
+        elif progress == 100:
+            bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid #555;
+                    border-radius: 2px;
+                    text-align: center;
+                }
+                QProgressBar::chunk {
+                    background-color: #2e7d32;
+                    border-radius: 1px;
+                }
+            """)
+        elif progress > 0:
+            bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid #555;
+                    border-radius: 2px;
+                    text-align: center;
+                }
+                QProgressBar::chunk {
+                    background-color: #f57c00;
+                    border-radius: 1px;
+                }
+            """)
+        else:
+            bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid #555;
+                    border-radius: 2px;
+                    text-align: center;
+                }
+                QProgressBar::chunk {
+                    background-color: #bdbdbd;
+                    border-radius: 1px;
+                }
+            """)
+        return bar
+
     def set_issues(self, issues: list[dict]):
         self._issues = issues
         self.setRowCount(len(issues))
+        # Limpiar widgets de celdas previos (barras de progreso y botones)
+        for row in range(self.rowCount()):
+            self.removeCellWidget(row, self.COL_PROGRESS)
+            self.removeCellWidget(row, self.COL_URL)
         for row, issue in enumerate(issues):
             bg_color = self._priority_bg(issue.get("priority_name", ""))
 
@@ -110,16 +178,8 @@ class TaskTable(QTableWidget):
             self.setItem(row, self.COL_ASSIGNED_TO, assigned_item)
 
             progress = issue.get("done_ratio", 0)
-            progress_item = QTableWidgetItem(f"{progress}%")
-            progress_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if bg_color:
-                progress_item.setBackground(bg_color)
-                progress_item.setForeground(Qt.GlobalColor.white)
-            elif progress == 100:
-                progress_item.setForeground(Qt.GlobalColor.darkGreen)
-            elif progress > 0:
-                progress_item.setForeground(Qt.GlobalColor.darkYellow)
-            self.setItem(row, self.COL_PROGRESS, progress_item)
+            progress_bar = self._create_progress_bar(progress, bg_color)
+            self.setCellWidget(row, self.COL_PROGRESS, progress_bar)
 
             btn = QToolButton()
             icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
