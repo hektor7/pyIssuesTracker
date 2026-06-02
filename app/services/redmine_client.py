@@ -36,6 +36,8 @@ class RedmineIssue:
     tracker_name: str = ""
     priority_id: int = 0
     priority_name: str = ""
+    category_id: int = 0
+    category_name: str = ""
 
 
 @dataclass
@@ -64,6 +66,30 @@ class RedmineMembership:
     id: int
     user_id: int
     user_name: str
+
+
+@dataclass
+class RedmineTracker:
+    id: int
+    name: str
+    default_status_id: int = 0
+
+
+@dataclass
+class RedmineJournal:
+    id: int
+    user_name: str
+    notes: str
+    created_on: str
+
+
+@dataclass
+class RedmineChecklistItem:
+    id: int
+    issue_id: int
+    subject: str
+    is_done: bool = False
+    position: int = 0
 
 
 class RedmineError(Exception):
@@ -156,7 +182,25 @@ class RedmineClient:
             raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
         except httpx.TimeoutException:
             raise RedmineConnectionError("Timeout al conectar al servidor Redmine")
-        return {}
+        try:
+            return resp.json()
+        except Exception:
+            return {}
+
+    def _delete(self, path: str) -> dict:
+        try:
+            resp = self.client.delete(path)
+            self._check_redirect(resp, path)
+            if resp.status_code == 401:
+                raise RedmineAuthError("API key no válida (HTTP 401)")
+            if resp.status_code == 404:
+                raise RedmineError(f"Recurso no encontrado: {path}")
+            resp.raise_for_status()
+            return {}
+        except httpx.ConnectError as e:
+            raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
+        except httpx.TimeoutException:
+            raise RedmineConnectionError("Timeout al conectar al servidor Redmine")
 
     def _check_redirect(self, resp, path: str):
         if resp.status_code in (301, 302, 303, 307, 308):
@@ -190,6 +234,20 @@ class RedmineClient:
             ))
         projects.sort(key=lambda x: x.name.lower())
         return projects
+
+    # ---- Trackers ----
+
+    def get_trackers(self) -> list[RedmineTracker]:
+        """GET /trackers.json"""
+        raw = self._get("/trackers.json")
+        trackers = []
+        for t in raw.get("trackers", []):
+            trackers.append(RedmineTracker(
+                id=t["id"],
+                name=t["name"],
+                default_status_id=t.get("default_status", {}).get("id", 0),
+            ))
+        return trackers
 
     # ---- Issues ----
 
@@ -247,6 +305,8 @@ class RedmineClient:
                 tracker_name=i.get("tracker", {}).get("name", ""),
                 priority_id=i.get("priority", {}).get("id", 0),
                 priority_name=i.get("priority", {}).get("name", ""),
+                category_id=i.get("category", {}).get("id", 0),
+                category_name=i.get("category", {}).get("name", ""),
             )
             issues.append(iss)
         return issues
@@ -256,9 +316,33 @@ class RedmineClient:
     def get_issue(self, issue_id: int, include_journals: bool = False) -> dict:
         return self._get(f"/issues/{issue_id}.json", params={"include": "journals"} if include_journals else None)
 
+    def get_issue_with_journals(self, issue_id: int) -> dict:
+        """Obtiene issue + journals parseados."""
+        raw = self.get_issue(issue_id, include_journals=True)
+        issue_data = raw.get("issue", {})
+        journals_raw = issue_data.get("journals", [])
+        journals = []
+        for j in journals_raw:
+            if j.get("notes"):  # Solo journals con notas (ignorar cambios de atributos)
+                journals.append(RedmineJournal(
+                    id=j["id"],
+                    user_name=j.get("user", {}).get("name", "Desconocido"),
+                    notes=j.get("notes", ""),
+                    created_on=j.get("created_on", ""),
+                ))
+        # Añadir category si existe
+        cat = issue_data.get("category")
+        if cat:
+            issue_data["category_id"] = cat.get("id", 0)
+            issue_data["category_name"] = cat.get("name", "")
+        issue_data["_journals"] = journals
+        return issue_data
+
     def create_issue(self, project_id: int, subject: str, description: str = "",
                      tracker_id: int = 1, priority_id: int = 2,
-                     assigned_to_id: int | None = None) -> dict:
+                     assigned_to_id: int | None = None,
+                     category_id: int = 0, start_date: str = "",
+                     done_ratio: int = 0) -> dict:
         payload: dict[str, Any] = {
             "project_id": project_id,
             "subject": subject,
@@ -268,6 +352,12 @@ class RedmineClient:
         }
         if assigned_to_id:
             payload["assigned_to_id"] = assigned_to_id
+        if category_id:
+            payload["category_id"] = category_id
+        if start_date:
+            payload["start_date"] = start_date
+        if done_ratio:
+            payload["done_ratio"] = done_ratio
         return self._post("/issues.json", {"issue": payload})
 
     def update_issue(self, issue_id: int, **fields) -> dict:
@@ -287,6 +377,42 @@ class RedmineClient:
         if notes:
             fields["notes"] = notes
         return self._put(f"/issues/{issue_id}.json", {"issue": fields})
+
+    def add_issue_note(self, issue_id: int, notes: str) -> dict:
+        """Añade una nota (comentario) a una issue existente."""
+        return self._put(f"/issues/{issue_id}.json", {"issue": {"notes": notes}})
+
+    # ---- Checklists (plugin RedmineUP) ----
+
+    def get_checklists(self, issue_id: int) -> list[RedmineChecklistItem]:
+        """GET /issues/{issue_id}/checklists.json"""
+        raw = self._get(f"/issues/{issue_id}/checklists.json")
+        items = []
+        for c in raw.get("checklists", []):
+            items.append(RedmineChecklistItem(
+                id=c["id"],
+                issue_id=c.get("issue_id", issue_id),
+                subject=c["subject"],
+                is_done=bool(c.get("is_done", False)),
+                position=c.get("position", 0),
+            ))
+        return items
+
+    def create_checklist_item(self, issue_id: int, subject: str,
+                              is_done: bool = False) -> dict:
+        """POST /issues/{issue_id}/checklists.json"""
+        return self._post(
+            f"/issues/{issue_id}/checklists.json",
+            {"checklist": {"subject": subject, "is_done": 1 if is_done else 0}}
+        )
+
+    def update_checklist_item(self, item_id: int, **fields) -> dict:
+        """PUT /checklists/{item_id}.json"""
+        return self._put(f"/checklists/{item_id}.json", {"checklist": fields})
+
+    def delete_checklist_item(self, item_id: int) -> dict:
+        """DELETE /checklists/{item_id}.json"""
+        return self._delete(f"/checklists/{item_id}.json")
 
     # ---- Estados ----
 

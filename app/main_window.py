@@ -34,6 +34,7 @@ class MainWindow(QMainWindow):
         self._project_hierarchy: dict[int, int | None] = {}
         self._statuses: list[tuple[int, str]] = []
         self._priorities: list[tuple[int, str]] = []
+        self._trackers: list[tuple[int, str]] = []
         self._current_user_id: int = 0
 
         self._known_issue_ids: set[int] = set()
@@ -187,6 +188,7 @@ class MainWindow(QMainWindow):
             self._cargar_proyectos()
             self._cargar_estados()
             self._cargar_priorities()
+            self._cargar_trackers()
             self._cargar_issues()
             self._update_poll_timer()
         except RedmineAuthError as e:
@@ -255,6 +257,15 @@ class MainWindow(QMainWindow):
             self._filter_bar.populate_priorities(self._priorities)
         except RedmineError:
             self._priorities = []
+
+    def _cargar_trackers(self):
+        if not self._redmine:
+            return
+        try:
+            trackers = self._redmine.get_trackers()
+            self._trackers = [(t.id, t.name) for t in trackers]
+        except RedmineError:
+            self._trackers = []
 
     def _cargar_categorias_proyecto(self, project_id: int):
         if not self._redmine or not project_id:
@@ -339,7 +350,25 @@ class MainWindow(QMainWindow):
         if not self._redmine:
             QMessageBox.warning(self, "Sin conexión", "Conéctate primero a Redmine.")
             return
-        dlg = TaskDialog(self, projects=self._projects)
+
+        # Cargar categorías iniciales si hay un proyecto seleccionado en el filtro
+        initial_categories = []
+        default_project_id = self._filter_bar.selected_project_id
+        if default_project_id:
+            try:
+                cats = self._redmine.get_project_issue_categories(default_project_id)
+                initial_categories = [(c.id, c.name) for c in cats]
+            except RedmineError:
+                pass
+
+        dlg = TaskDialog(
+            self,
+            projects=self._projects,
+            trackers=self._trackers,
+            priorities=self._priorities,
+            initial_categories=initial_categories,
+            redmine_client=self._redmine,
+        )
         if dlg.exec() == TaskDialog.DialogCode.Accepted:
             try:
                 self._redmine.create_issue(
@@ -347,6 +376,10 @@ class MainWindow(QMainWindow):
                     subject=dlg.subject,
                     description=dlg.description,
                     tracker_id=dlg.tracker_id,
+                    priority_id=dlg.priority_id,
+                    category_id=dlg.category_id,
+                    start_date=dlg.start_date,
+                    done_ratio=dlg.done_ratio,
                 )
                 self._cargar_issues()
             except RedmineError as e:
@@ -363,16 +396,41 @@ class MainWindow(QMainWindow):
         if not self._redmine:
             return
         try:
-            data = self._redmine.get_issue(issue_id)
-            issue = data.get("issue", {})
+            data = self._redmine.get_issue_with_journals(issue_id)
+            # data ya contiene _journals y los campos planos
             task_data = {
-                "id": issue.get("id"),
-                "subject": issue.get("subject", ""),
-                "description": issue.get("description", ""),
-                "project_id": issue.get("project", {}).get("id", 0),
-                "tracker_id": issue.get("tracker", {}).get("id", 1),
+                "id": data.get("id"),
+                "subject": data.get("subject", ""),
+                "description": data.get("description", ""),
+                "project_id": data.get("project", {}).get("id", 0),
+                "tracker_id": data.get("tracker", {}).get("id", 1),
+                "priority_id": data.get("priority", {}).get("id", 2),
+                "category_id": data.get("category_id", 0),
+                "start_date": data.get("start_date", ""),
+                "done_ratio": data.get("done_ratio", 0),
+                "status_id": data.get("status", {}).get("id", 0),
+                "journals": data.get("_journals", []),
             }
-            dlg = TaskDialog(self, projects=self._projects, task_data=task_data)
+
+            # Cargar categorías iniciales para el proyecto de la tarea
+            project_id = task_data["project_id"]
+            initial_categories = []
+            if project_id:
+                try:
+                    cats = self._redmine.get_project_issue_categories(project_id)
+                    initial_categories = [(c.id, c.name) for c in cats]
+                except RedmineError:
+                    pass
+
+            dlg = TaskDialog(
+                self,
+                projects=self._projects,
+                trackers=self._trackers,
+                priorities=self._priorities,
+                initial_categories=initial_categories,
+                redmine_client=self._redmine,
+                task_data=task_data,
+            )
             if dlg.exec() == TaskDialog.DialogCode.Accepted:
                 self._redmine.update_issue(
                     issue_id,
@@ -380,6 +438,11 @@ class MainWindow(QMainWindow):
                     description=dlg.description,
                     project_id=dlg.project_id,
                     tracker_id=dlg.tracker_id,
+                    priority_id=dlg.priority_id,
+                    category_id=dlg.category_id,
+                    start_date=dlg.start_date,
+                    done_ratio=dlg.done_ratio,
+                    status_id=dlg.status_id if dlg.status_id else None,
                 )
                 self._cargar_issues()
         except RedmineError as e:
