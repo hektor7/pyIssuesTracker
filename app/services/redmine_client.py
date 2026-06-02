@@ -363,13 +363,19 @@ class RedmineClient:
     def update_issue(self, issue_id: int, **fields) -> dict:
         return self._put(f"/issues/{issue_id}.json", {"issue": fields})
 
-    def assign_issue(self, issue_id: int, user_id: int) -> dict:
-        return self.update_issue(issue_id, assigned_to_id=user_id)
+    def assign_issue(self, issue_id: int, user_id: int, notes: str = "") -> dict:
+        fields: dict[str, Any] = {"assigned_to_id": user_id}
+        if notes:
+            fields["notes"] = notes
+        return self.update_issue(issue_id, **fields)
 
-    def complete_issue(self, issue_id: int, done_ratio: int = 100, status_id: int | None = None) -> dict:
-        fields = {"done_ratio": done_ratio}
+    def complete_issue(self, issue_id: int, done_ratio: int = 100,
+                       status_id: int | None = None, notes: str = "") -> dict:
+        fields: dict[str, Any] = {"done_ratio": done_ratio}
         if status_id:
             fields["status_id"] = status_id
+        if notes:
+            fields["notes"] = notes
         return self.update_issue(issue_id, **fields)
 
     def reject_issue(self, issue_id: int, status_id: int, notes: str = "") -> dict:

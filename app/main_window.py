@@ -20,6 +20,7 @@ from app.dialogs.settings_dialog import SettingsDialog
 from app.dialogs.task_dialog import TaskDialog
 from app.dialogs.reject_dialog import RejectDialog
 from app.dialogs.assign_dialog import AssignDialog
+from app.dialogs.complete_dialog import CompleteDialog
 from app.tray_icon import TrayManager
 from app.utils.constants import APP_DISPLAY_NAME
 
@@ -470,7 +471,7 @@ class MainWindow(QMainWindow):
         dlg = AssignDialog(issue_id, members, self._current_user_id, self)
         if dlg.exec() == AssignDialog.DialogCode.Accepted:
             try:
-                self._redmine.assign_issue(issue_id, dlg.selected_user_id)
+                self._redmine.assign_issue(issue_id, dlg.selected_user_id, notes=dlg.notes)
                 self._cargar_issues()
             except RedmineError as e:
                 QMessageBox.critical(self, "Error", f"No se pudo asignar:\n{str(e)}")
@@ -483,17 +484,13 @@ class MainWindow(QMainWindow):
         if not self._redmine:
             return
 
-        reply = QMessageBox.question(
-            self, "Confirmar",
-            f"¿Marcar la tarea #{issue_id} como completada?\n\n"
-            "Se pondrá el progreso al 100%, estado 'Resuelta' y fecha de fin a hoy.",
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        dlg = CompleteDialog(issue_id, self)
+        if dlg.exec() != CompleteDialog.DialogCode.Accepted:
             return
 
         try:
             resolved_status = next((sid for sid, sname in self._statuses if sname.lower() in ("resuelta", "resolved")), None)
-            self._redmine.complete_issue(issue_id, done_ratio=100, status_id=resolved_status)
+            self._redmine.complete_issue(issue_id, done_ratio=100, status_id=resolved_status, notes=dlg.notes)
             self._cargar_issues()
             self._tray.notify(APP_DISPLAY_NAME, f"Tarea #{issue_id} completada")
         except RedmineError as e:
