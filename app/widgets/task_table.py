@@ -135,6 +135,7 @@ class TaskTable(QTableWidget):
     def _create_progress_bar(self, progress: int, bg_color: QColor | None = None) -> QProgressBar:
         """Crea una QProgressBar estilizada según el progreso y el color de fondo de prioridad."""
         bar = QProgressBar()
+        bar.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         bar.setRange(0, 100)
         bar.setValue(progress)
         bar.setTextVisible(True)
@@ -252,6 +253,7 @@ class TaskTable(QTableWidget):
             self.setCellWidget(row, self.COL_PROGRESS, progress_bar)
 
             btn = QToolButton()
+            btn.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
             icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
             btn.setIcon(icon)
             btn.setIconSize(QSize(16, 16))
