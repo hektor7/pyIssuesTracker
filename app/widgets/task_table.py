@@ -35,6 +35,7 @@ class TaskTable(QTableWidget):
         self.setAlternatingRowColors(True)
         self.verticalHeader().setVisible(False)
         self.setShowGrid(True)
+        self.setSortingEnabled(True)
         self.verticalHeader().setDefaultSectionSize(28)
 
         header = self.horizontalHeader()
@@ -205,7 +206,8 @@ class TaskTable(QTableWidget):
         for row, issue in enumerate(issues):
             bg_color = self._priority_bg(issue.get("priority_name", ""))
 
-            id_item = QTableWidgetItem(str(issue["id"]))
+            id_item = QTableWidgetItem()
+            id_item.setData(Qt.ItemDataRole.DisplayRole, int(issue["id"]))
             id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             id_item.setData(Qt.ItemDataRole.UserRole, issue.get("project_id", 0))
             if bg_color:
@@ -249,6 +251,10 @@ class TaskTable(QTableWidget):
             self.setItem(row, self.COL_ASSIGNED_TO, assigned_item)
 
             progress = issue.get("done_ratio", 0)
+            # Item dummy para ordenación numérica
+            sort_item = QTableWidgetItem()
+            sort_item.setData(Qt.ItemDataRole.DisplayRole, int(progress))
+            self.setItem(row, self.COL_PROGRESS, sort_item)
             progress_bar = self._create_progress_bar(progress, bg_color)
             self.setCellWidget(row, self.COL_PROGRESS, progress_bar)
 

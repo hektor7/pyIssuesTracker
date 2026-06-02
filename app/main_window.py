@@ -37,6 +37,7 @@ class MainWindow(QMainWindow):
         self._priorities: list[tuple[int, str]] = []
         self._trackers: list[tuple[int, str]] = []
         self._current_user_id: int = 0
+        self._search_text: str = ""
 
         self._known_issue_ids: set[int] = set()
         self._poll_timer = QTimer(self)
@@ -78,6 +79,7 @@ class MainWindow(QMainWindow):
         self._filter_bar.categoria_cambiada.connect(self._on_filter_category_changed)
         self._filter_bar.asignado_cambiado.connect(self._on_filter_assigned_changed)
         self._filter_bar.fijar_cambiado.connect(self._on_filter_fixed_changed)
+        self._filter_bar.busqueda_cambiada.connect(self._on_busqueda_cambiada)
         layout.addWidget(self._filter_bar)
 
         self._task_table = TaskTable()
@@ -338,6 +340,10 @@ class MainWindow(QMainWindow):
                 }
                 for iss in issues
             ]
+            # Filtro cliente-side por texto en título
+            if self._search_text:
+                search_lower = self._search_text.lower()
+                issues_dict = [i for i in issues_dict if search_lower in i.get("subject", "").lower()]
             self._task_table.set_issues(issues_dict)
             self._update_task_table_context()
             self._status_indicator.set_connected(True)
@@ -557,6 +563,10 @@ class MainWindow(QMainWindow):
         if fixed:
             self._settings.filter_project_id = self._filter_bar.selected_project_id
             self._settings.filter_project_name = self._filter_bar.selected_project_name
+
+    def _on_busqueda_cambiada(self, text: str):
+        self._search_text = text.strip()
+        self._cargar_issues()
 
     def _update_poll_timer(self):
         project_id = self._filter_bar.selected_project_id

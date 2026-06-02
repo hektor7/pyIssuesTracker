@@ -1,7 +1,7 @@
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QComboBox, QCheckBox, QLabel,
-    QCompleter,
+    QWidget, QHBoxLayout, QVBoxLayout, QComboBox, QCheckBox, QLabel,
+    QCompleter, QLineEdit,
 )
 
 
@@ -12,16 +12,21 @@ class FilterBar(QWidget):
     categoria_cambiada = pyqtSignal(int)
     asignado_cambiado = pyqtSignal(int)
     fijar_cambiado = pyqtSignal(bool)
+    busqueda_cambiada = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._projects: list[tuple[int, str]] = []
         self._project_lookup: dict[int, str] = {}
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(8)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(4, 2, 4, 2)
+        main_layout.setSpacing(4)
 
-        layout.addWidget(QLabel("Proyecto:"))
+        # --- Fila 1: filtros existentes ---
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
+
+        row1.addWidget(QLabel("Proyecto:"))
 
         self._project_combo = QComboBox()
         self._project_combo.setEditable(True)
@@ -30,7 +35,7 @@ class FilterBar(QWidget):
         self._project_combo.setMaxVisibleItems(20)
         self._project_combo.currentIndexChanged.connect(self._on_project_selected)
         self._project_combo.lineEdit().returnPressed.connect(self._on_enter_pressed)
-        layout.addWidget(self._project_combo)
+        row1.addWidget(self._project_combo)
 
         self._completer = QCompleter([], self)
         self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -40,20 +45,20 @@ class FilterBar(QWidget):
         self._fixed_checkbox = QCheckBox("Fijar filtro")
         self._fixed_checkbox.setToolTip("Mantener este filtro de proyecto al reiniciar la aplicación")
         self._fixed_checkbox.toggled.connect(self.fijar_cambiado.emit)
-        layout.addWidget(self._fixed_checkbox)
+        row1.addWidget(self._fixed_checkbox)
 
-        layout.addSpacing(16)
-        layout.addWidget(QLabel("Estado:"))
+        row1.addSpacing(16)
+        row1.addWidget(QLabel("Estado:"))
 
         self._status_combo = QComboBox()
         self._status_combo.addItem("Abiertas", "open")
         self._status_combo.addItem("Todas", "*")
         self._status_combo.addItem("Cerradas", "closed")
         self._status_combo.currentIndexChanged.connect(self._on_status_changed)
-        layout.addWidget(self._status_combo)
+        row1.addWidget(self._status_combo)
 
-        layout.addSpacing(16)
-        layout.addWidget(QLabel("Prioridad:"))
+        row1.addSpacing(16)
+        row1.addWidget(QLabel("Prioridad:"))
 
         self._priority_combo = QComboBox()
         self._priority_combo.setEditable(True)
@@ -61,15 +66,15 @@ class FilterBar(QWidget):
         self._priority_combo.setMinimumWidth(120)
         self._priority_combo.addItem("(Todas)", 0)
         self._priority_combo.currentIndexChanged.connect(self._on_priority_changed)
-        layout.addWidget(self._priority_combo)
+        row1.addWidget(self._priority_combo)
 
         self._priority_completer = QCompleter([], self)
         self._priority_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._priority_completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self._priority_combo.setCompleter(self._priority_completer)
 
-        layout.addSpacing(16)
-        layout.addWidget(QLabel("Categoría:"))
+        row1.addSpacing(16)
+        row1.addWidget(QLabel("Categoría:"))
 
         self._category_combo = QComboBox()
         self._category_combo.setEditable(True)
@@ -77,15 +82,15 @@ class FilterBar(QWidget):
         self._category_combo.setMinimumWidth(120)
         self._category_combo.addItem("(Todas)", 0)
         self._category_combo.currentIndexChanged.connect(self._on_category_changed)
-        layout.addWidget(self._category_combo)
+        row1.addWidget(self._category_combo)
 
         self._category_completer = QCompleter([], self)
         self._category_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._category_completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self._category_combo.setCompleter(self._category_completer)
 
-        layout.addSpacing(16)
-        layout.addWidget(QLabel("Asignado a:"))
+        row1.addSpacing(16)
+        row1.addWidget(QLabel("Asignado a:"))
 
         self._assigned_combo = QComboBox()
         self._assigned_combo.setEditable(True)
@@ -93,14 +98,28 @@ class FilterBar(QWidget):
         self._assigned_combo.setMinimumWidth(150)
         self._assigned_combo.currentIndexChanged.connect(self._on_assigned_changed)
         self._assigned_combo.lineEdit().returnPressed.connect(self._on_assigned_enter_pressed)
-        layout.addWidget(self._assigned_combo)
+        row1.addWidget(self._assigned_combo)
 
         self._assigned_completer = QCompleter([], self)
         self._assigned_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._assigned_completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self._assigned_combo.setCompleter(self._assigned_completer)
 
-        layout.addStretch()
+        row1.addStretch()
+        main_layout.addLayout(row1)
+
+        # --- Fila 2: búsqueda por texto ---
+        row2 = QHBoxLayout()
+        row2.setSpacing(8)
+        row2.addWidget(QLabel("Buscar:"))
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("Buscar por título...")
+        self._search_edit.setMinimumWidth(300)
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.textChanged.connect(self._on_search_text_changed)
+        row2.addWidget(self._search_edit)
+        row2.addStretch()
+        main_layout.addLayout(row2)
 
     def populate_projects(self, projects: list[tuple[int, str]], hierarchy: dict[int, int | None] | None = None):
         self._projects = projects
@@ -285,3 +304,9 @@ class FilterBar(QWidget):
             if text in self._assigned_combo.itemText(i).lower():
                 self._assigned_combo.setCurrentIndex(i)
                 return
+
+    def _on_search_text_changed(self, text: str):
+        self.busqueda_cambiada.emit(text)
+
+    def set_search_text(self, text: str):
+        self._search_edit.setText(text)
