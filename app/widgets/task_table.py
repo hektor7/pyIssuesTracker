@@ -20,8 +20,8 @@ class TaskTable(QTableWidget):
 
     HEADERS = ["ID", "Título", "Fecha inicio", "Estado", "Asignado a", "Progreso %", ""]
 
-    _FG_INMEDIATA = QColor(200, 0, 0)
-    _FG_URGENTE = QColor(139, 0, 0)
+    _BG_INMEDIATA = QColor(200, 0, 0)
+    _BG_URGENTE = QColor(180, 20, 20)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -52,25 +52,26 @@ class TaskTable(QTableWidget):
         if row < len(self._issues):
             self.tarea_doble_click.emit(self._issues[row]["id"])
 
-    def _priority_fg(self, priority_name: str) -> QColor | None:
+    def _priority_bg(self, priority_name: str) -> QColor | None:
         pname = (priority_name or "").lower().strip()
         if pname in ("inmediata", "immediate"):
-            return self._FG_INMEDIATA
+            return self._BG_INMEDIATA
         if pname in ("urgente", "urgent"):
-            return self._FG_URGENTE
+            return self._BG_URGENTE
         return None
 
     def set_issues(self, issues: list[dict]):
         self._issues = issues
         self.setRowCount(len(issues))
         for row, issue in enumerate(issues):
-            fg_color = self._priority_fg(issue.get("priority_name", ""))
+            bg_color = self._priority_bg(issue.get("priority_name", ""))
 
             id_item = QTableWidgetItem(str(issue["id"]))
             id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             id_item.setData(Qt.ItemDataRole.UserRole, issue.get("project_id", 0))
-            if fg_color:
-                id_item.setForeground(fg_color)
+            if bg_color:
+                id_item.setBackground(bg_color)
+                id_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_ID, id_item)
 
             title_item = QTableWidgetItem(issue.get("subject", ""))
@@ -82,37 +83,42 @@ class TaskTable(QTableWidget):
                 f"<b>Asignado a:</b> {issue.get('assigned_to_name', 'Sin asignar')}<br>"
                 f"<b>Prioridad:</b> {issue.get('priority_name', '')}"
             )
-            if fg_color:
-                title_item.setForeground(fg_color)
+            if bg_color:
+                title_item.setBackground(bg_color)
+                title_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_TITLE, title_item)
 
             start_item = QTableWidgetItem(issue.get("start_date", ""))
             start_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if fg_color:
-                start_item.setForeground(fg_color)
+            if bg_color:
+                start_item.setBackground(bg_color)
+                start_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_START_DATE, start_item)
 
             status_item = QTableWidgetItem(issue.get("status_name", ""))
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if fg_color:
-                status_item.setForeground(fg_color)
+            if bg_color:
+                status_item.setBackground(bg_color)
+                status_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_STATUS, status_item)
 
             assigned_item = QTableWidgetItem(issue.get("assigned_to_name", ""))
             assigned_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if fg_color:
-                assigned_item.setForeground(fg_color)
+            if bg_color:
+                assigned_item.setBackground(bg_color)
+                assigned_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_ASSIGNED_TO, assigned_item)
 
             progress = issue.get("done_ratio", 0)
             progress_item = QTableWidgetItem(f"{progress}%")
             progress_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if progress == 100:
+            if bg_color:
+                progress_item.setBackground(bg_color)
+                progress_item.setForeground(Qt.GlobalColor.white)
+            elif progress == 100:
                 progress_item.setForeground(Qt.GlobalColor.darkGreen)
             elif progress > 0:
                 progress_item.setForeground(Qt.GlobalColor.darkYellow)
-            if fg_color:
-                progress_item.setForeground(fg_color)
             self.setItem(row, self.COL_PROGRESS, progress_item)
 
             btn = QToolButton()

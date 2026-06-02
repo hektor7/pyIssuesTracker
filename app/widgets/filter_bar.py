@@ -56,19 +56,33 @@ class FilterBar(QWidget):
         layout.addWidget(QLabel("Prioridad:"))
 
         self._priority_combo = QComboBox()
+        self._priority_combo.setEditable(True)
+        self._priority_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self._priority_combo.setMinimumWidth(120)
         self._priority_combo.addItem("(Todas)", 0)
         self._priority_combo.currentIndexChanged.connect(self._on_priority_changed)
         layout.addWidget(self._priority_combo)
 
+        self._priority_completer = QCompleter([], self)
+        self._priority_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._priority_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._priority_combo.setCompleter(self._priority_completer)
+
         layout.addSpacing(16)
         layout.addWidget(QLabel("Categoría:"))
 
         self._category_combo = QComboBox()
+        self._category_combo.setEditable(True)
+        self._category_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self._category_combo.setMinimumWidth(120)
         self._category_combo.addItem("(Todas)", 0)
         self._category_combo.currentIndexChanged.connect(self._on_category_changed)
         layout.addWidget(self._category_combo)
+
+        self._category_completer = QCompleter([], self)
+        self._category_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._category_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._category_combo.setCompleter(self._category_completer)
 
         layout.addSpacing(16)
         layout.addWidget(QLabel("Asignado a:"))
@@ -134,6 +148,8 @@ class FilterBar(QWidget):
             if self._priority_combo.itemData(i) == current_data:
                 self._priority_combo.setCurrentIndex(i)
                 break
+        names = [self._priority_combo.itemText(i) for i in range(self._priority_combo.count())]
+        self._priority_completer.model().setStringList(names)
         self._priority_combo.blockSignals(False)
 
     def populate_categories(self, categories: list[tuple[int, str]]):
@@ -147,6 +163,8 @@ class FilterBar(QWidget):
             if self._category_combo.itemData(i) == current_data:
                 self._category_combo.setCurrentIndex(i)
                 break
+        names = [self._category_combo.itemText(i) for i in range(self._category_combo.count())]
+        self._category_completer.model().setStringList(names)
         self._category_combo.blockSignals(False)
 
     def populate_assignees(self, assignees: list[tuple[int, str]]):
