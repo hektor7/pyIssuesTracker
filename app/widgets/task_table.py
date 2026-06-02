@@ -1,15 +1,16 @@
-from PyQt6.QtCore import pyqtSignal, Qt, QUrl, QSize
+from PyQt6.QtCore import pyqtSignal, Qt, QUrl, QSize, QPoint
 from PyQt6.QtGui import QDesktopServices, QIcon, QColor
 from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QPushButton, QToolButton, QToolTip, QStyle, QApplication,
-    QProgressBar,
+    QProgressBar, QMenu,
 )
 
 
 class TaskTable(QTableWidget):
     tarea_doble_click = pyqtSignal(int)
     tarea_abrir_url = pyqtSignal(int, str)
+    cambio_rapido = pyqtSignal(int, str, int)  # issue_id, tipo, valor
 
     COL_ID = 0
     COL_TITLE = 1
@@ -49,10 +50,79 @@ class TaskTable(QTableWidget):
 
         self.cellDoubleClicked.connect(self._on_double_click)
         self._issues: list[dict] = []
+        self._statuses: list[tuple[int, str]] = []
+        self._current_user_id: int = 0
+        self._frequent_people_ids: list[int] = []
+        self._frequent_people_names: dict[int, str] = {}
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def set_context_data(self, statuses: list[tuple[int, str]], current_user_id: int,
+                         frequent_people_ids: list[int], member_names: dict[int, str]):
+        self._statuses = statuses
+        self._current_user_id = current_user_id
+        self._frequent_people_ids = frequent_people_ids
+        self._frequent_people_names = member_names
 
     def _on_double_click(self, row: int, col: int):
         if row < len(self._issues):
             self.tarea_doble_click.emit(self._issues[row]["id"])
+
+    def _show_context_menu(self, pos: QPoint):
+        row = self.rowAt(pos.y())
+        col = self.columnAt(pos.x())
+        if row < 0 or row >= len(self._issues):
+            return
+        issue = self._issues[row]
+        issue_id = issue["id"]
+
+        if col == self.COL_PROGRESS:
+            self._show_progress_menu(pos, issue_id, issue.get("done_ratio", 0))
+        elif col == self.COL_ASSIGNED_TO:
+            self._show_assign_menu(pos, issue_id)
+        elif col == self.COL_STATUS:
+            self._show_status_menu(pos, issue_id, issue.get("status_id", 0))
+
+    def _show_progress_menu(self, pos: QPoint, issue_id: int, current: int):
+        menu = QMenu(self)
+        for pct in (0, 20, 40, 60, 80, 100):
+            action = menu.addAction(f"{pct}%")
+            action.setCheckable(True)
+            if pct == current:
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, v=pct: self.cambio_rapido.emit(issue_id, "progreso", v))
+        menu.exec(self.viewport().mapToGlobal(pos))
+
+    def _show_status_menu(self, pos: QPoint, issue_id: int, current_status_id: int):
+        menu = QMenu(self)
+        for sid, sname in self._statuses:
+            action = menu.addAction(sname)
+            action.setCheckable(True)
+            if sid == current_status_id:
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, v=sid: self.cambio_rapido.emit(issue_id, "estado", v))
+        menu.exec(self.viewport().mapToGlobal(pos))
+
+    def _show_assign_menu(self, pos: QPoint, issue_id: int):
+        menu = QMenu(self)
+
+        accion_yo = menu.addAction("Asignarme a mí")
+        accion_yo.triggered.connect(
+            lambda: self.cambio_rapido.emit(issue_id, "asignado", self._current_user_id)
+        )
+
+        menu.addSeparator()
+
+        if self._frequent_people_ids:
+            for uid in self._frequent_people_ids:
+                name = self._frequent_people_names.get(uid, f"Usuario #{uid}")
+                action = menu.addAction(name)
+                action.triggered.connect(lambda checked, v=uid: self.cambio_rapido.emit(issue_id, "asignado", v))
+        else:
+            accion_vacia = menu.addAction("No hay personas frecuentes")
+            accion_vacia.setEnabled(False)
+
+        menu.exec(self.viewport().mapToGlobal(pos))
 
     def _priority_bg(self, priority_name: str) -> QColor | None:
         pname = (priority_name or "").lower().strip()

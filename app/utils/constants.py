@@ -57,6 +57,7 @@ KEY_FILTER_ASSIGNED_TO = "filter/assigned_to"
 KEY_WINDOW_GEOMETRY = "window/geometry"
 KEY_WINDOW_STATE = "window/state"
 KEY_LAST_UPDATE_CHECK = "update/last_check"
+KEY_FREQUENT_PEOPLE = "frequent/people"
 
 # ============================================================
 # Temas disponibles

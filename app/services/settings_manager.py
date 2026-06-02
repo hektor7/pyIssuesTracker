@@ -26,6 +26,7 @@ from app.utils.constants import (
     KEY_WINDOW_GEOMETRY,
     KEY_WINDOW_STATE,
     KEY_LAST_UPDATE_CHECK,
+    KEY_FREQUENT_PEOPLE,
     DEFAULT_REDMINE_URL,
     DEFAULT_API_KEY,
 )
@@ -258,3 +259,23 @@ class SettingsManager:
     @last_update_check.setter
     def last_update_check(self, value: str):
         self._settings.setValue(KEY_LAST_UPDATE_CHECK, value)
+
+    # ---- Personas frecuentes ----
+
+    @property
+    def frequent_people(self) -> list[int]:
+        raw = self._settings.value(KEY_FREQUENT_PEOPLE, "")
+        if not raw:
+            return []
+        return [int(uid) for uid in str(raw).split(",") if uid.strip().isdigit()]
+
+    @frequent_people.setter
+    def frequent_people(self, value: list[int]):
+        self._settings.setValue(KEY_FREQUENT_PEOPLE, ",".join(str(uid) for uid in value))
+
+    def add_frequent_person(self, user_id: int):
+        people = self.frequent_people
+        if user_id in people:
+            people.remove(user_id)
+        people.insert(0, user_id)
+        self.frequent_people = people[:5]

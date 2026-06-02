@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
         self._task_table.setObjectName("task_table")
         self._task_table.tarea_doble_click.connect(self._editar_tarea)
         self._task_table.tarea_abrir_url.connect(self._abrir_url_redmine)
+        self._task_table.cambio_rapido.connect(self._on_cambio_rapido)
         layout.addWidget(self._task_table)
 
         self._status_indicator = StatusIndicator()
@@ -248,6 +249,7 @@ class MainWindow(QMainWindow):
             self._statuses = [(s.id, s.name) for s in statuses]
         except RedmineError:
             self._statuses = []
+        self._update_task_table_context()
 
     def _cargar_priorities(self):
         if not self._redmine:
@@ -337,6 +339,7 @@ class MainWindow(QMainWindow):
                 for iss in issues
             ]
             self._task_table.set_issues(issues_dict)
+            self._update_task_table_context()
             self._status_indicator.set_connected(True)
             if track_known:
                 self._known_issue_ids = {iss["id"] for iss in issues_dict}
@@ -472,6 +475,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() == AssignDialog.DialogCode.Accepted:
             try:
                 self._redmine.assign_issue(issue_id, dlg.selected_user_id, notes=dlg.notes)
+                self._registrar_asignacion(dlg.selected_user_id)
                 self._cargar_issues()
             except RedmineError as e:
                 QMessageBox.critical(self, "Error", f"No se pudo asignar:\n{str(e)}")
@@ -595,6 +599,77 @@ class MainWindow(QMainWindow):
             message = subjects
         self._tray.notify(APP_DISPLAY_NAME, message, duration_ms=8000)
         self._mostrar_ventana()
+
+    def _update_task_table_context(self):
+        member_names: dict[int, str] = {}
+        # Intentar obtener nombres de miembros del proyecto actual
+        row_data = self._task_table.get_selected_row_data()
+        project_id = row_data.get("project_id", 0) if row_data else self._filter_bar.selected_project_id
+        if project_id and self._redmine:
+            try:
+                mbs = self._redmine.get_project_memberships(project_id)
+                for m in mbs:
+                    member_names[m.user_id] = m.user_name
+            except RedmineError:
+                pass
+        self._task_table.set_context_data(
+            self._statuses,
+            self._current_user_id,
+            self._settings.frequent_people,
+            member_names,
+        )
+
+    def _registrar_asignacion(self, user_id: int):
+        if user_id and user_id != self._current_user_id:
+            self._settings.add_frequent_person(user_id)
+            self._update_task_table_context()
+
+    def _on_cambio_rapido(self, issue_id: int, tipo: str, valor: int):
+        if not self._redmine:
+            return
+
+        if tipo == "progreso":
+            reply = QMessageBox.question(
+                self, "Confirmar cambio",
+                f"¿Cambiar progreso de tarea #{issue_id} al {valor}%?"
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                self._redmine.update_issue(issue_id, done_ratio=valor)
+                self._cargar_issues()
+            except RedmineError as e:
+                QMessageBox.critical(self, "Error", f"No se pudo actualizar el progreso:\n{str(e)}")
+
+        elif tipo == "asignado":
+            nombre = "mí" if valor == self._current_user_id else f"usuario #{valor}"
+            reply = QMessageBox.question(
+                self, "Confirmar asignación",
+                f"¿Asignar tarea #{issue_id} a {nombre}?"
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                self._redmine.assign_issue(issue_id, valor)
+                self._registrar_asignacion(valor)
+                self._cargar_issues()
+            except RedmineError as e:
+                QMessageBox.critical(self, "Error", f"No se pudo asignar:\n{str(e)}")
+
+        elif tipo == "estado":
+            # Buscar nombre del estado
+            estado_nombre = next((sname for sid, sname in self._statuses if sid == valor), f"ID {valor}")
+            reply = QMessageBox.question(
+                self, "Confirmar cambio de estado",
+                f"¿Cambiar estado de tarea #{issue_id} a \"{estado_nombre}\"?"
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                self._redmine.update_issue(issue_id, status_id=valor)
+                self._cargar_issues()
+            except RedmineError as e:
+                QMessageBox.critical(self, "Error", f"No se pudo cambiar el estado:\n{str(e)}")
 
     # ================================================================
     # Configuración
