@@ -77,6 +77,7 @@ class TaskDialog(QDialog):
         self._project_combo = self._make_searchable_combo()
         for pid, pname in self._projects:
             self._project_combo.addItem(pname, pid)
+        self._update_completer_model(self._project_combo)
         self._project_combo.currentIndexChanged.connect(self._on_project_changed)
         basic_form.addRow("Proyecto:", self._project_combo)
 
@@ -84,6 +85,7 @@ class TaskDialog(QDialog):
         self._tracker_combo = self._make_searchable_combo()
         for tid, tname in self._trackers:
             self._tracker_combo.addItem(tname, tid)
+        self._update_completer_model(self._tracker_combo)
         basic_form.addRow("Tracker:", self._tracker_combo)
 
         # Asunto
@@ -119,6 +121,7 @@ class TaskDialog(QDialog):
                 default_priority_index = i
         if self._prior_combo.count() > default_priority_index:
             self._prior_combo.setCurrentIndex(default_priority_index)
+        self._update_completer_model(self._prior_combo)
         details_form.addRow("Prioridad:", self._prior_combo)
 
         # Categoría (buscable, carga dinámica)
@@ -193,11 +196,16 @@ class TaskDialog(QDialog):
         main_layout.addWidget(buttons)
 
     def _make_searchable_combo(self) -> QComboBox:
-        """Crea un QComboBox editable con QCompleter para búsqueda por teclado (MatchContains)."""
+        """Crea un QComboBox editable con QCompleter para búsqueda por teclado (MatchContains).
+
+        Usa QCompleter([], combo) en lugar de QCompleter(combo) para que el modelo
+        del completer no dependa del modelo del combo (que se destruye al hacer clear()).
+        El caller debe actualizar el modelo llamando a _update_completer_model(combo).
+        """
         combo = QComboBox()
         combo.setEditable(True)
         combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        completer = QCompleter(combo)
+        completer = QCompleter([], combo)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         completer.setFilterMode(Qt.MatchFlag.MatchContains)
         combo.setCompleter(completer)
@@ -205,6 +213,14 @@ class TaskDialog(QDialog):
         # Guardar referencia explícita al completer para acceso posterior
         combo._completer = completer
         return combo
+
+    @staticmethod
+    def _update_completer_model(combo: QComboBox):
+        """Sincroniza el modelo del QCompleter con los items actuales del combo."""
+        completer = getattr(combo, '_completer', None)
+        if completer:
+            names = [combo.itemText(i) for i in range(combo.count())]
+            completer.model().setStringList(names)
 
     # ================================================================
     # Population
@@ -292,9 +308,7 @@ class TaskDialog(QDialog):
             self._cat_combo.addItem(cname, cid)
             names.append(cname)
         # Actualizar el completer
-        completer = getattr(self._cat_combo, '_completer', None)
-        if completer:
-            completer.model().setStringList(names)
+        self._update_completer_model(self._cat_combo)
         self._cat_combo.blockSignals(False)
 
         # Si hay categoría pendiente, seleccionarla
