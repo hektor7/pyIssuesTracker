@@ -202,6 +202,8 @@ class TaskDialog(QDialog):
         completer.setFilterMode(Qt.MatchFlag.MatchContains)
         combo.setCompleter(completer)
         combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # Guardar referencia explícita al completer para acceso posterior
+        combo._completer = completer
         return combo
 
     # ================================================================
@@ -290,7 +292,7 @@ class TaskDialog(QDialog):
             self._cat_combo.addItem(cname, cid)
             names.append(cname)
         # Actualizar el completer
-        completer = self._cat_combo.completer()
+        completer = getattr(self._cat_combo, '_completer', None)
         if completer:
             completer.model().setStringList(names)
         self._cat_combo.blockSignals(False)
