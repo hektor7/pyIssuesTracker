@@ -39,7 +39,9 @@ if "%PYTHON_EXE%"=="" (
     exit /b 1
 )
 echo [OK] Python encontrado: %PYTHON_EXE%
-for /f "usebackq tokens=*" %%i in (`"%PYTHON_EXE%" -c "import sys; print(sys.version)"`) do echo       %%i
+"%PYTHON_EXE%" -c "import sys; print(sys.version)" > "%TEMP%\pyver_line.txt" 2>&1
+for /f "usebackq tokens=*" %%i in ("%TEMP%\pyver_line.txt") do echo       %%i
+del "%TEMP%\pyver_line.txt" 2>nul
 echo.
 
 :: ---- Verificar/Crear venv ----
@@ -107,11 +109,16 @@ goto :eof
 :find_python
 where %~1 >nul 2>&1
 if errorlevel 1 exit /b 1
-for /f "usebackq tokens=2 delims= " %%v in (`"%~1" -c "import sys; print(sys.version_info[0])"`) do (
+"%~1" -c "import sys; print(sys.version_info[0])" > "%TEMP%\pyver.txt" 2>&1
+if errorlevel 1 exit /b 1
+for /f "usebackq tokens=*" %%v in ("%TEMP%\pyver.txt") do (
     if %%v LSS 3 (
+        del "%TEMP%\pyver.txt" 2>nul
         exit /b 1
     )
     set PYTHON_EXE=%~1
+    del "%TEMP%\pyver.txt" 2>nul
     exit /b 0
 )
+del "%TEMP%\pyver.txt" 2>nul
 exit /b 1
