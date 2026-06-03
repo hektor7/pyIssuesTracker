@@ -63,11 +63,20 @@ class CommentsWidget(QWidget):
         btn_layout.addWidget(self._add_btn)
         main_layout.addLayout(btn_layout)
 
+    @staticmethod
+    def _journal_get(j, key: str, default: str = ""):
+        """Obtiene un valor de un journal, ya sea objeto RedmineJournal o diccionario."""
+        if hasattr(j, key):
+            return getattr(j, key, default)
+        elif hasattr(j, "get"):
+            return j.get(key, default)
+        return default
+
     def set_comments(self, journals: list):
         """Carga los comentarios existentes.
         
         Args:
-            journals: Lista de diccionarios con keys: 'user_name', 'notes', 'created_on'
+            journals: Lista de diccionarios u objetos RedmineJournal con user_name, notes, created_on.
         """
         # Limpiar comentarios anteriores
         while self._comments_layout.count():
@@ -90,13 +99,15 @@ class CommentsWidget(QWidget):
                 f_layout.setSpacing(2)
 
                 # Cabecera: autor y fecha
-                header = QLabel(f"<b>{j.get('user_name', 'Desconocido')}</b> — {j.get('created_on', '')}")
+                user = self._journal_get(j, 'user_name', 'Desconocido')
+                date = self._journal_get(j, 'created_on', '')
+                header = QLabel(f"<b>{user}</b> — {date}")
                 header.setStyleSheet("background: transparent;")
                 f_layout.addWidget(header)
 
                 # Texto del comentario (read-only)
                 text_browser = QTextBrowser()
-                text_browser.setPlainText(j.get('notes', ''))
+                text_browser.setPlainText(self._journal_get(j, 'notes', ''))
                 text_browser.setMaximumHeight(80)
                 text_browser.setStyleSheet("QTextBrowser { background: transparent; border: none; }")
                 f_layout.addWidget(text_browser)
