@@ -27,6 +27,10 @@ from app.utils.constants import (
     KEY_WINDOW_STATE,
     KEY_LAST_UPDATE_CHECK,
     KEY_FREQUENT_PEOPLE,
+    KEY_NOTIFICATIONS_ENABLED,
+    KEY_NOTIFICATIONS_PROJECTS,
+    KEY_NOTIFICATIONS_ASSIGNED_ONLY,
+    KEY_NOTIFICATIONS_POLL_INTERVAL,
     DEFAULT_REDMINE_URL,
     DEFAULT_API_KEY,
 )
@@ -279,3 +283,44 @@ class SettingsManager:
             people.remove(user_id)
         people.insert(0, user_id)
         self.frequent_people = people[:5]
+
+    # ---- Notificaciones ----
+
+    @property
+    def notifications_enabled(self) -> bool:
+        return bool(self._settings.value(KEY_NOTIFICATIONS_ENABLED, True))
+
+    @notifications_enabled.setter
+    def notifications_enabled(self, value: bool):
+        self._settings.setValue(KEY_NOTIFICATIONS_ENABLED, value)
+
+    @property
+    def notifications_projects(self) -> list[int]:
+        raw = self._settings.value(KEY_NOTIFICATIONS_PROJECTS, "")
+        if not raw:
+            return []
+        return [int(pid) for pid in str(raw).split(",") if pid.strip().isdigit()]
+
+    @notifications_projects.setter
+    def notifications_projects(self, value: list[int]):
+        self._settings.setValue(KEY_NOTIFICATIONS_PROJECTS, ",".join(str(pid) for pid in value))
+
+    @property
+    def notifications_assigned_only(self) -> bool:
+        return bool(self._settings.value(KEY_NOTIFICATIONS_ASSIGNED_ONLY, False))
+
+    @notifications_assigned_only.setter
+    def notifications_assigned_only(self, value: bool):
+        self._settings.setValue(KEY_NOTIFICATIONS_ASSIGNED_ONLY, value)
+
+    @property
+    def poll_interval_minutes(self) -> int:
+        val = self._settings.value(KEY_NOTIFICATIONS_POLL_INTERVAL, 5)
+        try:
+            return max(1, min(60, int(val)))
+        except (ValueError, TypeError):
+            return 5
+
+    @poll_interval_minutes.setter
+    def poll_interval_minutes(self, value: int):
+        self._settings.setValue(KEY_NOTIFICATIONS_POLL_INTERVAL, value)

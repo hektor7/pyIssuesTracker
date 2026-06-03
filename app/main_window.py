@@ -39,10 +39,9 @@ class MainWindow(QMainWindow):
         self._current_user_id: int = 0
         self._search_text: str = ""
 
-        self._known_issue_ids: set[int] = set()
+        self._known_issue_ids: dict[int, set[int]] = {}
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._check_new_issues)
-        self._poll_interval_ms = 300000
 
         self.setWindowTitle(f"{APP_DISPLAY_NAME} v{__version__}")
         self.setMinimumSize(900, 550)
@@ -348,7 +347,7 @@ class MainWindow(QMainWindow):
             self._update_task_table_context()
             self._status_indicator.set_connected(True)
             if track_known:
-                self._known_issue_ids = {iss["id"] for iss in issues_dict}
+                self._known_issue_ids[project_id] = {iss["id"] for iss in issues_dict}
         except RedmineError as e:
             self._status_indicator.set_connected(False, str(e))
 
@@ -421,6 +420,7 @@ class MainWindow(QMainWindow):
                 "done_ratio": data.get("done_ratio", 0),
                 "status_id": data.get("status", {}).get("id", 0),
                 "journals": data.get("_journals", []),
+                "attachments": data.get("_attachments", []),
             }
 
             # Cargar categorías iniciales para el proyecto de la tarea
@@ -569,32 +569,51 @@ class MainWindow(QMainWindow):
         self._cargar_issues()
 
     def _update_poll_timer(self):
-        project_id = self._filter_bar.selected_project_id
-        if project_id and self._redmine:
-            if not self._poll_timer.isActive():
-                self._poll_timer.start(self._poll_interval_ms)
+        subscribed = self._settings.notifications_projects
+        has_projects = bool(self._filter_bar.selected_project_id) or bool(subscribed)
+        if has_projects and self._redmine:
+            interval_ms = self._settings.poll_interval_minutes * 60000
+            self._poll_timer.start(interval_ms)
         else:
             self._poll_timer.stop()
 
     def _check_new_issues(self):
-        if not self._redmine or not self._filter_bar.selected_project_id:
+        if not self._redmine:
             return
-        try:
-            issues = self._redmine.get_issues(
-                project_id=self._filter_bar.selected_project_id,
-                status_filter=self._filter_bar.selected_status,
-                category_id=self._filter_bar.selected_category or None,
-                priority_id=self._filter_bar.selected_priority or None,
-            )
-            current_ids = {iss.id for iss in issues}
-            new_ids = current_ids - self._known_issue_ids
-            if new_ids:
-                new_issues = [iss for iss in issues if iss.id in new_ids]
-                self._notify_new_issues(new_issues)
-                self._known_issue_ids = current_ids
-                self._cargar_issues(track_known=False)
-        except RedmineError:
-            pass
+
+        subscribed = self._settings.notifications_projects
+        if subscribed:
+            project_ids = subscribed
+        else:
+            pid = self._filter_bar.selected_project_id
+            if not pid:
+                return
+            project_ids = [pid]
+
+        assigned_only = self._settings.notifications_assigned_only
+        assigned_to = "me" if assigned_only else None
+        all_new_issues: list = []
+
+        for pid in project_ids:
+            try:
+                issues = self._redmine.get_issues(
+                    project_id=pid,
+                    status_filter="open",
+                    assigned_to_id=assigned_to,
+                )
+                known = self._known_issue_ids.get(pid, set())
+                current_ids = {iss.id for iss in issues}
+                new_ids = current_ids - known
+                if new_ids:
+                    all_new_issues.extend(iss for iss in issues if iss.id in new_ids)
+                self._known_issue_ids[pid] = current_ids
+            except RedmineError:
+                continue
+
+        if all_new_issues and self._settings.notifications_enabled:
+            self._notify_new_issues(all_new_issues)
+        if self._filter_bar.selected_project_id:
+            self._cargar_issues(track_known=False)
 
     def _notify_new_issues(self, new_issues: list):
         count = len(new_issues)
@@ -686,7 +705,7 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def _abrir_configuracion(self):
-        dlg = SettingsDialog(self._settings, self)
+        dlg = SettingsDialog(self._settings, self, projects=self._projects)
         dlg.exec()
 
     # ================================================================

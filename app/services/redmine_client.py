@@ -38,6 +38,7 @@ class RedmineIssue:
     priority_name: str = ""
     category_id: int = 0
     category_name: str = ""
+    attachments: list["RedmineAttachment"] = field(default_factory=list)
 
 
 @dataclass
@@ -90,6 +91,18 @@ class RedmineChecklistItem:
     subject: str
     is_done: bool = False
     position: int = 0
+
+
+@dataclass
+class RedmineAttachment:
+    id: int
+    filename: str
+    filesize: int = 0
+    content_type: str = ""
+    content_url: str = ""
+    description: str = ""
+    author_name: str = ""
+    created_on: str = ""
 
 
 class RedmineError(Exception):
@@ -286,6 +299,7 @@ class RedmineClient:
         issues_raw = raw.get("issues", [])
         issues: list[RedmineIssue] = []
         for i in issues_raw:
+            attachments = self._parse_attachments(i.get("attachments", []))
             iss = RedmineIssue(
                 id=i["id"],
                 subject=i.get("subject", ""),
@@ -307,9 +321,26 @@ class RedmineClient:
                 priority_name=i.get("priority", {}).get("name", ""),
                 category_id=i.get("category", {}).get("id", 0),
                 category_name=i.get("category", {}).get("name", ""),
+                attachments=attachments,
             )
             issues.append(iss)
         return issues
+
+    @staticmethod
+    def _parse_attachments(attachments_raw: list) -> list[RedmineAttachment]:
+        attachments = []
+        for a in attachments_raw:
+            attachments.append(RedmineAttachment(
+                id=a.get("id", 0),
+                filename=a.get("filename", ""),
+                filesize=a.get("filesize", 0),
+                content_type=a.get("content_type", ""),
+                content_url=a.get("content_url", ""),
+                description=a.get("description", ""),
+                author_name=a.get("author", {}).get("name", ""),
+                created_on=a.get("created_on", ""),
+            ))
+        return attachments
 
     # ---- Issue actions ----
 
@@ -317,8 +348,8 @@ class RedmineClient:
         return self._get(f"/issues/{issue_id}.json", params={"include": "journals"} if include_journals else None)
 
     def get_issue_with_journals(self, issue_id: int) -> dict:
-        """Obtiene issue + journals parseados."""
-        raw = self.get_issue(issue_id, include_journals=True)
+        """Obtiene issue + journals y attachments parseados."""
+        raw = self._get(f"/issues/{issue_id}.json", params={"include": "journals,attachments"})
         issue_data = raw.get("issue", {})
         journals_raw = issue_data.get("journals", [])
         journals = []
@@ -336,6 +367,8 @@ class RedmineClient:
             issue_data["category_id"] = cat.get("id", 0)
             issue_data["category_name"] = cat.get("name", "")
         issue_data["_journals"] = journals
+        # Parsear attachments
+        issue_data["_attachments"] = self._parse_attachments(issue_data.get("attachments", []))
         return issue_data
 
     def create_issue(self, project_id: int, subject: str, description: str = "",
@@ -472,6 +505,20 @@ class RedmineClient:
     def get_current_user_id(self) -> int:
         data = self._get("/users/current.json")
         return data["user"]["id"]
+
+    def download_attachment(self, content_url: str, dest_path: str):
+        """Descarga un adjunto desde content_url a dest_path usando streaming."""
+        client = self._build_client()
+        try:
+            with client.stream("GET", content_url) as response:
+                response.raise_for_status()
+                with open(dest_path, "wb") as f:
+                    for chunk in response.iter_bytes(chunk_size=8192):
+                        f.write(chunk)
+        except httpx.HTTPError as e:
+            raise RedmineError(f"Error al descargar adjunto: {e}") from e
+        finally:
+            client.close()
 
     def close(self):
         if self._client is not None:

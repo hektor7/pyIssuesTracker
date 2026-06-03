@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QLabel, QSpinBox, QMessageBox, QGroupBox,
     QDateEdit, QSlider, QHBoxLayout, QScrollArea,
     QWidget, QCompleter, QSizePolicy,
+    QPushButton, QFileDialog, QFrame,
 )
 
 from app.services.redmine_client import RedmineClient
@@ -43,6 +44,7 @@ class TaskDialog(QDialog):
         if self._is_edit and self._redmine:
             self._load_checklists()
             self._load_comments()
+            self._load_attachments()
 
     # ================================================================
     # UI Setup
@@ -185,6 +187,13 @@ class TaskDialog(QDialog):
         comments_layout.addWidget(self._comments_widget)
         self._comments_group.setVisible(False)  # Oculto en nueva tarea
         scroll_layout.addWidget(self._comments_group)
+
+        # --- Grupo: Documentos adjuntos ---
+        self._attachments_group = QGroupBox("Documentos adjuntos")
+        self._attachments_layout = QVBoxLayout(self._attachments_group)
+        self._attachments_layout.setSpacing(4)
+        self._attachments_group.setVisible(False)  # Oculto hasta cargar
+        scroll_layout.addWidget(self._attachments_group)
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
@@ -392,6 +401,90 @@ class TaskDialog(QDialog):
                 # No recargamos; el comentario se guardó en el servidor
             except Exception:
                 QMessageBox.warning(self, "Error", "No se pudo añadir el comentario.")
+
+    # ================================================================
+    # Adjuntos
+    # ================================================================
+
+    def _load_attachments(self):
+        """Carga los adjuntos desde task_data y crea un frame por cada uno."""
+        attachments = self._task_data.get("attachments", [])
+        # Limpiar adjuntos anteriores
+        while self._attachments_layout.count():
+            item = self._attachments_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not attachments:
+            no_att = QLabel("(Sin adjuntos)")
+            no_att.setStyleSheet("color: palette(mid); font-style: italic;")
+            self._attachments_layout.addWidget(no_att)
+        else:
+            for att in attachments:
+                frame = QFrame()
+                frame.setFrameShape(QFrame.Shape.StyledPanel)
+                frame.setStyleSheet("QFrame { background: palette(alternate-base); border-radius: 4px; padding: 4px; }")
+                f_layout = QHBoxLayout(frame)
+                f_layout.setContentsMargins(6, 4, 6, 4)
+                f_layout.setSpacing(8)
+
+                # Info del adjunto
+                filename = self._attachment_get(att, "filename", "sin_nombre")
+                filesize = self._attachment_get(att, "filesize", 0)
+                created_on = self._attachment_get(att, "created_on", "")
+
+                size_str = self._format_filesize(filesize)
+                info = QLabel(f"<b>{filename}</b><br><span style='color: gray;'>{size_str} — {created_on}</span>")
+                info.setStyleSheet("background: transparent;")
+                f_layout.addWidget(info, 1)
+
+                # Boton descargar
+                download_btn = QPushButton("Descargar")
+                download_btn.setFixedWidth(90)
+                download_btn.clicked.connect(lambda checked, a=att: self._on_download_attachment(a))
+                f_layout.addWidget(download_btn)
+
+                self._attachments_layout.addWidget(frame)
+
+        self._attachments_group.setVisible(True)
+
+    def _on_download_attachment(self, attachment):
+        """Abre dialogo Guardar como y descarga el adjunto."""
+        filename = self._attachment_get(attachment, "filename", "archivo")
+        content_url = self._attachment_get(attachment, "content_url", "")
+
+        if not content_url:
+            QMessageBox.warning(self, "Error", "No se encontró la URL de descarga del adjunto.")
+            return
+
+        dest_path, _ = QFileDialog.getSaveFileName(self, "Guardar adjunto", filename)
+        if not dest_path:
+            return  # Usuario canceló
+
+        try:
+            self._redmine.download_attachment(content_url, dest_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"No se pudo descargar el adjunto:\n{str(e)}")
+
+    @staticmethod
+    def _attachment_get(att, key: str, default=""):
+        """Obtiene un valor de un adjunto, ya sea dict u objeto."""
+        if hasattr(att, key):
+            return getattr(att, key, default)
+        elif hasattr(att, "get"):
+            return att.get(key, default)
+        return default
+
+    @staticmethod
+    def _format_filesize(size_bytes: int) -> str:
+        """Formatea bytes a KB o MB legible."""
+        if size_bytes >= 1048576:
+            return f"{size_bytes / 1048576:.1f} MB"
+        elif size_bytes >= 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        elif size_bytes > 0:
+            return f"{size_bytes} B"
+        return ""
 
     # ================================================================
     # Progreso - sincronización slider/spin

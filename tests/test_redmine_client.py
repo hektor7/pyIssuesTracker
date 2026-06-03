@@ -1,8 +1,8 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
 
-from app.services.redmine_client import RedmineClient
+from app.services.redmine_client import RedmineClient, RedmineAttachment, RedmineIssue
 
 
 @pytest.fixture
@@ -53,3 +53,78 @@ class TestCompleteIssue:
             "/issues/42.json",
             {"issue": {"done_ratio": 100, "notes": "completed"}},
         )
+
+
+class TestParseAttachments:
+    """Tests para parseo de attachments desde respuestas JSON."""
+
+    def test_parse_attachments_from_issue(self, client):
+        """_parse_attachments debe convertir JSON a lista de RedmineAttachment."""
+        raw = [
+            {
+                "id": 1,
+                "filename": "doc.pdf",
+                "filesize": 204800,
+                "content_type": "application/pdf",
+                "content_url": "https://redmine.example.com/attachments/download/1/doc.pdf",
+                "description": "Informe final",
+                "author": {"id": 5, "name": "Juan Perez"},
+                "created_on": "2026-06-01T10:30:00Z",
+            }
+        ]
+        result = client._parse_attachments(raw)
+        assert len(result) == 1
+        att = result[0]
+        assert att.id == 1
+        assert att.filename == "doc.pdf"
+        assert att.filesize == 204800
+        assert att.content_type == "application/pdf"
+        assert att.content_url == "https://redmine.example.com/attachments/download/1/doc.pdf"
+        assert att.description == "Informe final"
+        assert att.author_name == "Juan Perez"
+        assert att.created_on == "2026-06-01T10:30:00Z"
+
+    def test_parse_empty_attachments(self, client):
+        """Lista vacia debe devolver lista vacia."""
+        result = client._parse_attachments([])
+        assert result == []
+
+    def test_parse_attachments_missing_fields(self, client):
+        """Campos ausentes deben usar valores por defecto."""
+        raw = [{"id": 1, "filename": "doc.txt"}]
+        result = client._parse_attachments(raw)
+        att = result[0]
+        assert att.filesize == 0
+        assert att.content_type == ""
+        assert att.content_url == ""
+
+
+class TestDownloadAttachment:
+    """Tests para la descarga de attachments."""
+
+    def test_download_attachment_writes_chunks(self, client):
+        """download_attachment debe escribir los chunks al archivo destino."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_bytes = MagicMock(return_value=[b"chunk1", b"chunk2"])
+
+        mock_stream_ctx = MagicMock()
+        mock_stream_ctx.__enter__ = MagicMock(return_value=mock_response)
+        mock_stream_ctx.__exit__ = MagicMock(return_value=False)
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(return_value=mock_stream_ctx)
+        mock_client.close = MagicMock()
+
+        mock_open_file = mock_open()
+
+        with patch.object(client, "_build_client", return_value=mock_client), \
+             patch("builtins.open", mock_open_file):
+            client.download_attachment("https://example.com/file.pdf", "/tmp/file.pdf")
+
+        mock_client.stream.assert_called_once_with("GET", "https://example.com/file.pdf")
+        mock_response.raise_for_status.assert_called_once()
+        mock_open_file.assert_called_once_with("/tmp/file.pdf", "wb")
+        handle = mock_open_file()
+        handle.write.assert_any_call(b"chunk1")
+        handle.write.assert_any_call(b"chunk2")

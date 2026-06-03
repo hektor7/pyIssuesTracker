@@ -58,6 +58,10 @@ KEY_WINDOW_GEOMETRY = "window/geometry"
 KEY_WINDOW_STATE = "window/state"
 KEY_LAST_UPDATE_CHECK = "update/last_check"
 KEY_FREQUENT_PEOPLE = "frequent/people"
+KEY_NOTIFICATIONS_ENABLED = "notifications/enabled"
+KEY_NOTIFICATIONS_PROJECTS = "notifications/projects"
+KEY_NOTIFICATIONS_ASSIGNED_ONLY = "notifications/assigned_only"
+KEY_NOTIFICATIONS_POLL_INTERVAL = "notifications/poll_interval"
 
 # ============================================================
 # Temas disponibles
