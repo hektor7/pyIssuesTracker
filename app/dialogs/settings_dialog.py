@@ -90,8 +90,8 @@ class SettingsDialog(QDialog):
         self._proxy_enabled_cb.toggled.connect(self._toggle_proxy_fields)
         layout.addWidget(self._proxy_enabled_cb)
 
-        group = QGroupBox("Configuración del proxy")
-        form = QFormLayout(group)
+        self._proxy_group = QGroupBox("Configuración del proxy")
+        form = QFormLayout(self._proxy_group)
         form.setSpacing(8)
 
         self._proxy_type_combo = QComboBox()
@@ -116,7 +116,7 @@ class SettingsDialog(QDialog):
         self._proxy_pass_edit.setPlaceholderText("(opcional)")
         form.addRow("Contraseña:", self._proxy_pass_edit)
 
-        layout.addWidget(group)
+        layout.addWidget(self._proxy_group)
         layout.addStretch()
         return widget
 
@@ -226,14 +226,14 @@ class SettingsDialog(QDialog):
 
     def _toggle_notif_fields(self, enabled: bool):
         """Habilita/deshabilita los campos de notificacion."""
-        for widget in self.findChildren(QGroupBox):
-            if widget.parent() == self._notif_enabled_cb.parent():
-                continue
-        # Encontramos todos los QGroupBox del tab de notificaciones y los habilitamos/deshabilitamos
         notif_tab = self._notif_enabled_cb.parent().parent()  # layout -> widget (tab)
         if isinstance(notif_tab, QWidget):
             for child in notif_tab.findChildren(QGroupBox):
                 child.setEnabled(enabled)
+
+    def _toggle_proxy_fields(self, enabled: bool):
+        """Habilita/deshabilita los campos de configuracion del proxy."""
+        self._proxy_group.setEnabled(enabled)
 
     def _load_settings(self):
         self._url_edit.setText(self._settings.redmine_url)
@@ -241,6 +241,7 @@ class SettingsDialog(QDialog):
         self._cookie_edit.setPlainText(self._settings.session_cookie)
         self._headers_edit.setPlainText(self._settings.extra_headers)
         self._proxy_enabled_cb.setChecked(self._settings.proxy_enabled)
+        self._toggle_proxy_fields(self._settings.proxy_enabled)
         idx = self._proxy_type_combo.findText(self._settings.proxy_type)
         if idx >= 0:
             self._proxy_type_combo.setCurrentIndex(idx)
