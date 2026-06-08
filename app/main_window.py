@@ -1,3 +1,5 @@
+import httpx
+
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QAction, QDesktopServices
 from PyQt6.QtWidgets import (
@@ -209,6 +211,11 @@ class MainWindow(QMainWindow):
             self._tray.set_icon_connected(False)
             QMessageBox.warning(self, "Error de conexión",
                                 f"No se pudo conectar al servidor Redmine.\n\n{str(e)}")
+        except httpx.UnsupportedProtocol as e:
+            self._status_indicator.set_connected(False, "URL inválida")
+            self._tray.set_icon_connected(False)
+            QMessageBox.warning(self, "URL inválida",
+                                f"La URL del servidor Redmine no es válida. Asegúrate de que empiece con https://.\n\n{str(e)}")
         except RedmineError as e:
             self._status_indicator.set_connected(False, "Error")
             self._tray.set_icon_connected(False)

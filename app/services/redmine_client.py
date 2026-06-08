@@ -124,7 +124,10 @@ class RedmineSSOError(RedmineError):
 class RedmineClient:
     def __init__(self, base_url: str, api_key: str, proxy_url: str | None = None,
                  session_cookie: str = "", extra_headers: dict[str, str] | None = None):
-        self._base_url = base_url.rstrip("/")
+        url = base_url.strip()
+        if url and not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        self._base_url = url.rstrip("/")
         self._api_key = api_key
         self._proxy_url = proxy_url
         self._session_cookie = session_cookie
