@@ -154,7 +154,7 @@ class TaskTable(QTableWidget):
                     color: white;
                 }}
                 QProgressBar::chunk {{
-                    background-color: #c62828;
+                    background-color: #ff9800;
                     border-radius: 1px;
                 }}
             """)
