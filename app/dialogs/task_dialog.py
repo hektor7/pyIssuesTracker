@@ -22,7 +22,9 @@ class TaskDialog(QDialog):
                  statuses: list[tuple[int, str]] | None = None,
                  initial_categories: list[tuple[int, str]] | None = None,
                  redmine_client: RedmineClient | None = None,
-                 task_data: dict | None = None):
+                 task_data: dict | None = None,
+                 default_project_id: int = 0,
+                 members: list[tuple[int, str]] | None = None):
         super().__init__(parent)
         self._projects = projects or []
         self._trackers = trackers or []
@@ -32,6 +34,10 @@ class TaskDialog(QDialog):
         self._redmine = redmine_client
         self._task_data = task_data or {}
         self._is_edit = bool(task_data)
+        self._default_project_id = default_project_id or 0
+        self._members = members or []
+        self._pending_files: list[str] = []
+        self._upload_tokens: list[dict] = []
 
         self.setWindowTitle("Editar tarea" if self._is_edit else "Nueva tarea")
         self.setMinimumWidth(700)
@@ -129,6 +135,11 @@ class TaskDialog(QDialog):
         self._update_completer_model(self._prior_combo)
         details_form.addRow("Prioridad:", self._prior_combo)
 
+        # Asignado a (buscable, visible en creación y edición)
+        self._assigned_combo = self._make_searchable_combo()
+        self._populate_members(self._members)
+        details_form.addRow("Asignado a:", self._assigned_combo)
+
         # Categoría (buscable, carga dinámica)
         self._cat_combo = self._make_searchable_combo()
         self._populate_categories(self._initial_categories)
@@ -195,6 +206,20 @@ class TaskDialog(QDialog):
         self._attachments_group.setVisible(False)  # Oculto hasta cargar
         scroll_layout.addWidget(self._attachments_group)
 
+        # --- Grupo: Adjuntar archivos (solo creación) ---
+        self._upload_group = QGroupBox("Adjuntar archivos")
+        upload_layout = QVBoxLayout(self._upload_group)
+        upload_layout.setSpacing(4)
+
+        add_file_btn = QPushButton("Añadir archivo...")
+        add_file_btn.clicked.connect(self._on_add_file)
+        upload_layout.addWidget(add_file_btn)
+
+        self._files_list_layout = QVBoxLayout()
+        upload_layout.addLayout(self._files_list_layout)
+        self._upload_group.setVisible(not self._is_edit)
+        scroll_layout.addWidget(self._upload_group)
+
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
         main_layout.addWidget(scroll)
@@ -240,6 +265,11 @@ class TaskDialog(QDialog):
 
     def _populate_fields(self):
         if not self._is_edit:
+            if self._default_project_id:
+                self._set_combo_data(self._project_combo, self._default_project_id)
+                self._on_project_changed()
+            if self._members:
+                self._populate_members(self._members)
             return
 
         # Proyecto
@@ -306,6 +336,7 @@ class TaskDialog(QDialog):
         project_id = self._project_combo.currentData() or 0
         if project_id and self._redmine:
             self._load_categories_for_project(project_id)
+            self._load_members_for_project(project_id)
 
     def _load_categories_for_project(self, project_id: int):
         try:
@@ -332,6 +363,76 @@ class TaskDialog(QDialog):
         if hasattr(self, '_pending_category_id') and self._pending_category_id:
             self._set_combo_data(self._cat_combo, self._pending_category_id)
             self._pending_category_id = 0
+
+    # ================================================================
+    # Miembros (Asignado a)
+    # ================================================================
+
+    def _populate_members(self, members: list[tuple[int, str]]):
+        self._assigned_combo.blockSignals(True)
+        self._assigned_combo.clear()
+        self._assigned_combo.addItem("(Sin asignar)", 0)
+        names = ["(Sin asignar)"]
+        for mid, mname in members:
+            self._assigned_combo.addItem(mname, mid)
+            names.append(mname)
+        self._update_completer_model(self._assigned_combo)
+        self._assigned_combo.blockSignals(False)
+
+    def _load_members_for_project(self, project_id: int):
+        try:
+            mbs = self._redmine.get_project_memberships(project_id)
+            members = [(m.user_id, m.user_name) for m in mbs if m.user_id]
+            self._populate_members(members)
+        except Exception:
+            self._populate_members([])
+
+    # ================================================================
+    # Subida de archivos
+    # ================================================================
+
+    def _on_add_file(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Seleccionar archivos para adjuntar")
+        for f in files:
+            if f not in self._pending_files:
+                self._pending_files.append(f)
+                self._add_file_row(f)
+
+    def _add_file_row(self, file_path: str):
+        import os
+        filename = os.path.basename(file_path)
+        size = os.path.getsize(file_path)
+
+        frame = QFrame()
+        frame.setFrameShape(QFrame.Shape.StyledPanel)
+        frame.setStyleSheet(
+            "QFrame { background: palette(alternate-base); border-radius: 4px; padding: 4px; }"
+        )
+        f_layout = QHBoxLayout(frame)
+        f_layout.setContentsMargins(6, 4, 6, 4)
+        f_layout.setSpacing(8)
+
+        info = QLabel(f"<b>{filename}</b>  <span style='color: gray;'>({self._format_filesize(size)})</span>")
+        info.setStyleSheet("background: transparent;")
+        f_layout.addWidget(info, 1)
+
+        remove_btn = QPushButton("Eliminar")
+        remove_btn.setFixedWidth(80)
+        remove_btn.clicked.connect(lambda checked, p=file_path: self._on_remove_file(p))
+        f_layout.addWidget(remove_btn)
+
+        self._files_list_layout.addWidget(frame)
+
+    def _on_remove_file(self, file_path: str):
+        if file_path in self._pending_files:
+            self._pending_files.remove(file_path)
+        for i in range(self._files_list_layout.count()):
+            widget = self._files_list_layout.itemAt(i).widget()
+            if widget:
+                label = widget.findChild(QLabel)
+                if label and file_path in label.text():
+                    widget.deleteLater()
+                    break
 
     # ================================================================
     # Checklists
@@ -509,6 +610,30 @@ class TaskDialog(QDialog):
             QMessageBox.warning(self, "Validación", "El asunto es obligatorio.")
             self._subject_edit.setFocus()
             return
+
+        self._upload_tokens = []
+        if self._pending_files and self._redmine:
+            for file_path in self._pending_files:
+                try:
+                    result = self._redmine.upload_file(file_path)
+                    token = result.get("upload", {}).get("token", "")
+                    if token:
+                        import os
+                        import mimetypes
+                        filename = os.path.basename(file_path)
+                        content_type, _ = mimetypes.guess_type(filename)
+                        self._upload_tokens.append({
+                            "token": token,
+                            "filename": filename,
+                            "content_type": content_type or "application/octet-stream",
+                        })
+                except Exception as e:
+                    QMessageBox.critical(
+                        self, "Error al subir archivo",
+                        f"No se pudo subir el archivo:\n{str(e)}"
+                    )
+                    return
+
         self.accept()
 
     # ================================================================
@@ -552,3 +677,11 @@ class TaskDialog(QDialog):
         if hasattr(self, '_status_combo'):
             return self._status_combo.currentData() or 0
         return 0
+
+    @property
+    def assigned_to_id(self) -> int:
+        return self._assigned_combo.currentData() or 0
+
+    @property
+    def upload_tokens(self) -> list[dict]:
+        return self._upload_tokens

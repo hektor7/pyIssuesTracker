@@ -378,7 +378,8 @@ class RedmineClient:
                      tracker_id: int = 1, priority_id: int = 2,
                      assigned_to_id: int | None = None,
                      category_id: int = 0, start_date: str = "",
-                     done_ratio: int = 0) -> dict:
+                     done_ratio: int = 0,
+                     uploads: list[dict] | None = None) -> dict:
         payload: dict[str, Any] = {
             "project_id": project_id,
             "subject": subject,
@@ -394,6 +395,8 @@ class RedmineClient:
             payload["start_date"] = start_date
         if done_ratio:
             payload["done_ratio"] = done_ratio
+        if uploads:
+            payload["uploads"] = uploads
         return self._post("/issues.json", {"issue": payload})
 
     def update_issue(self, issue_id: int, **fields) -> dict:
@@ -508,6 +511,70 @@ class RedmineClient:
     def get_current_user_id(self) -> int:
         data = self._get("/users/current.json")
         return data["user"]["id"]
+
+    def upload_file(self, file_path: str) -> dict:
+        """Sube un archivo a Redmine mediante POST /uploads.json.
+
+        Args:
+            file_path: Ruta local del archivo a subir.
+
+        Returns:
+            dict con la respuesta de Redmine, ej: {"upload": {"token": "..."}}
+
+        Raises:
+            RedmineError: Si el archivo no existe, la subida falla o el servidor
+                          no soporta uploads.
+        """
+        import mimetypes
+        import os
+
+        if not os.path.isfile(file_path):
+            raise RedmineError(f"Archivo no encontrado: {file_path}")
+
+        with open(file_path, "rb") as f:
+            file_content = f.read()
+
+        filename = os.path.basename(file_path)
+        content_type, _ = mimetypes.guess_type(filename)
+        content_type = content_type or "application/octet-stream"
+
+        headers = {
+            "X-Redmine-API-Key": self._api_key,
+            "Content-Type": "application/octet-stream",
+        }
+        if self._session_cookie:
+            headers["Cookie"] = self._session_cookie
+        headers.update(self._extra_headers)
+
+        try:
+            with httpx.Client(
+                base_url=self._base_url,
+                headers=headers,
+                timeout=REDMINE_REQUEST_TIMEOUT * 4,
+                follow_redirects=False,
+                proxy=self._proxy_url if self._proxy_url else None,
+            ) as upload_client:
+                resp = upload_client.post("/uploads.json", content=file_content)
+                if resp.status_code == 401:
+                    raise RedmineAuthError("API key no válida (HTTP 401)")
+                if resp.status_code == 404:
+                    raise RedmineError(
+                        "La subida de archivos no está disponible en este servidor Redmine "
+                        "(HTTP 404). El plugin de uploads podría no estar habilitado."
+                    )
+                if resp.status_code == 405:
+                    raise RedmineError(
+                        "La subida de archivos no está permitida en este servidor Redmine "
+                        "(HTTP 405). Verifica la configuración del servidor."
+                    )
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.ConnectError as e:
+            raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
+        except httpx.TimeoutException:
+            raise RedmineConnectionError(
+                "Timeout al subir el archivo (puede ser demasiado grande)."
+            )
 
     def download_attachment(self, content_url: str, dest_path: str):
         """Descarga un adjunto desde content_url a dest_path usando streaming."""

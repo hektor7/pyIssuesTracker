@@ -367,13 +367,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Sin conexión", "Conéctate primero a Redmine.")
             return
 
-        # Cargar categorías iniciales si hay un proyecto seleccionado en el filtro
+        # Cargar categorías y miembros si hay un proyecto seleccionado en el filtro
         initial_categories = []
+        members: list[tuple[int, str]] = []
         default_project_id = self._filter_bar.selected_project_id
         if default_project_id:
             try:
                 cats = self._redmine.get_project_issue_categories(default_project_id)
                 initial_categories = [(c.id, c.name) for c in cats]
+            except RedmineError:
+                pass
+            try:
+                mbs = self._redmine.get_project_memberships(default_project_id)
+                members = [(m.user_id, m.user_name) for m in mbs if m.user_id]
             except RedmineError:
                 pass
 
@@ -385,6 +391,8 @@ class MainWindow(QMainWindow):
             statuses=self._statuses,
             initial_categories=initial_categories,
             redmine_client=self._redmine,
+            default_project_id=default_project_id,
+            members=members,
         )
         if dlg.exec() == TaskDialog.DialogCode.Accepted:
             try:
@@ -395,8 +403,10 @@ class MainWindow(QMainWindow):
                     tracker_id=dlg.tracker_id,
                     priority_id=dlg.priority_id,
                     category_id=dlg.category_id,
+                    assigned_to_id=dlg.assigned_to_id or None,
                     start_date=dlg.start_date,
                     done_ratio=dlg.done_ratio,
+                    uploads=dlg.upload_tokens or None,
                 )
                 self._cargar_issues()
             except RedmineError as e:
