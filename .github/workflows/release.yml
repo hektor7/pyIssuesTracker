@@ -11,7 +11,7 @@ jobs:
   build-linux:
     name: Build (Linux)
     runs-on: ubuntu-latest
-    container: ubuntu:20.04
+    container: ubuntu:22.04
     steps:
       - name: Install system deps
         run: |
