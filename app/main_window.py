@@ -1,5 +1,7 @@
 import httpx
 
+from urllib.parse import urljoin
+
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QAction, QDesktopServices
 from PyQt6.QtWidgets import (
@@ -81,6 +83,7 @@ class MainWindow(QMainWindow):
         self._filter_bar.asignado_cambiado.connect(self._on_filter_assigned_changed)
         self._filter_bar.fijar_cambiado.connect(self._on_filter_fixed_changed)
         self._filter_bar.busqueda_cambiada.connect(self._on_busqueda_cambiada)
+        self._filter_bar.fecha_cambiada.connect(self._on_filter_date_changed)
         layout.addWidget(self._filter_bar)
 
         self._task_table = TaskTable()
@@ -88,6 +91,7 @@ class MainWindow(QMainWindow):
         self._task_table.tarea_doble_click.connect(self._editar_tarea)
         self._task_table.tarea_abrir_url.connect(self._abrir_url_redmine)
         self._task_table.cambio_rapido.connect(self._on_cambio_rapido)
+        self._task_table.due_date_cambiada.connect(self._on_due_date_changed)
         layout.addWidget(self._task_table)
 
         self._status_indicator = StatusIndicator()
@@ -352,7 +356,9 @@ class MainWindow(QMainWindow):
         except RedmineError:
             self._filter_bar.populate_assignees([])
 
-    def _cargar_issues(self, *, track_known: bool = True):
+    def _cargar_issues(self, *, track_known: bool = True,
+                       due_date_from: str | None = None,
+                       due_date_to: str | None = None):
         if not self._redmine:
             return
         project_id = self._filter_bar.selected_project_id or None
@@ -377,6 +383,8 @@ class MainWindow(QMainWindow):
                 category_id=category_id,
                 priority_id=priority_id,
                 assigned_to_id=assigned_to_id,
+                due_date_from=due_date_from,
+                due_date_to=due_date_to,
             )
             issues_dict = [
                 {
@@ -384,6 +392,7 @@ class MainWindow(QMainWindow):
                     "subject": iss.subject,
                     "description": iss.description,
                     "start_date": iss.start_date,
+                    "due_date": iss.due_date,
                     "status_name": iss.status_name,
                     "status_id": iss.status_id,
                     "done_ratio": iss.done_ratio,
@@ -394,7 +403,7 @@ class MainWindow(QMainWindow):
                     "author_name": iss.author_name,
                     "tracker_name": iss.tracker_name,
                     "priority_name": iss.priority_name,
-                    "url": f"{self._settings.redmine_url}/issues/{iss.id}",
+                    "url": urljoin(self._settings.redmine_url.rstrip("/") + "/", f"issues/{iss.id}"),
                 }
                 for iss in issues
             ]
@@ -457,6 +466,7 @@ class MainWindow(QMainWindow):
                     category_id=dlg.category_id,
                     assigned_to_id=dlg.assigned_to_id or None,
                     start_date=dlg.start_date,
+                    due_date=dlg.due_date if dlg.due_enabled else "",
                     done_ratio=dlg.done_ratio,
                     uploads=dlg.upload_tokens or None,
                 )
@@ -492,13 +502,19 @@ class MainWindow(QMainWindow):
                 "attachments": data.get("_attachments", []),
             }
 
-            # Cargar categorías iniciales para el proyecto de la tarea
+            # Cargar categorías y miembros iniciales para el proyecto de la tarea
             project_id = task_data["project_id"]
             initial_categories = []
+            members: list[tuple[int, str]] = []
             if project_id:
                 try:
                     cats = self._redmine.get_project_issue_categories(project_id)
                     initial_categories = [(c.id, c.name) for c in cats]
+                except RedmineError:
+                    pass
+                try:
+                    mbs = self._redmine.get_project_memberships(project_id)
+                    members = [(m.user_id, m.user_name) for m in mbs if m.user_id]
                 except RedmineError:
                     pass
 
@@ -511,6 +527,7 @@ class MainWindow(QMainWindow):
                 initial_categories=initial_categories,
                 redmine_client=self._redmine,
                 task_data=task_data,
+                members=members,
             )
             if dlg.exec() == TaskDialog.DialogCode.Accepted:
                 self._redmine.update_issue(
@@ -522,6 +539,7 @@ class MainWindow(QMainWindow):
                     priority_id=dlg.priority_id,
                     category_id=dlg.category_id,
                     start_date=dlg.start_date,
+                    due_date=dlg.due_date if dlg.due_enabled else "",
                     done_ratio=dlg.done_ratio,
                     status_id=dlg.status_id if dlg.status_id else None,
                 )
@@ -596,7 +614,16 @@ class MainWindow(QMainWindow):
         if url:
             QDesktopServices.openUrl(QUrl(url))
         elif self._settings.redmine_url:
-            QDesktopServices.openUrl(QUrl(f"{self._settings.redmine_url}/issues/{issue_id}"))
+            base = self._settings.redmine_url.rstrip("/")
+            QDesktopServices.openUrl(QUrl(f"{base}/issues/{issue_id}"))
+
+    def _on_due_date_changed(self, issue_id: int, due_date: str):
+        if not self._redmine:
+            return
+        try:
+            self._redmine.update_issue(issue_id, due_date=due_date if due_date else "")
+        except RedmineError as e:
+            QMessageBox.warning(self, "Error", f"No se pudo actualizar la fecha de fin:\n{str(e)}")
 
     # ================================================================
     # Filtros
@@ -636,6 +663,9 @@ class MainWindow(QMainWindow):
     def _on_busqueda_cambiada(self, text: str):
         self._search_text = text.strip()
         self._cargar_issues()
+
+    def _on_filter_date_changed(self, due_date_from: str, due_date_to: str):
+        self._cargar_issues(due_date_from=due_date_from or None, due_date_to=due_date_to or None)
 
     def _update_poll_timer(self):
         subscribed = self._settings.notifications_projects

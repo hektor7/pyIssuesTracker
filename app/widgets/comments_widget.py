@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
     QFrame, QSizePolicy, QHBoxLayout,
 )
 from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import QCompleter
 
 
 class CommentsWidget(QWidget):
@@ -122,7 +123,45 @@ class CommentsWidget(QWidget):
             self.nota_agregada.emit(text)
             self._note_edit.clear()
 
+    def set_members(self, members: list[tuple[int, str]]):
+        """Configura el autocompletado @usuario con los miembros del proyecto."""
+        names = [name for _, name in members]
+        setup_mention_completer(self._note_edit, names)
+
     def clear(self):
         """Limpia todos los comentarios y el campo de nueva nota."""
         self._note_edit.clear()
         self.set_comments([])
+
+
+def setup_mention_completer(text_edit: QPlainTextEdit, names: list[str]):
+    """Configura un QCompleter para autocompletar @usuario en un QPlainTextEdit.
+
+    El completer se activa cuando el usuario escribe '@' seguido de texto sin espacios.
+    """
+    completer = QCompleter(names, text_edit)
+    completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+    completer.setFilterMode(Qt.MatchFlag.MatchContains)
+    completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+    completer.setMaxVisibleItems(5)
+
+    def on_text_changed():
+        cursor = text_edit.textCursor()
+        text = text_edit.toPlainText()
+        pos = cursor.position()
+        # Buscar la última '@' antes del cursor
+        at_pos = text.rfind('@', 0, pos)
+        if at_pos >= 0:
+            after_at = text[at_pos:pos]
+            # Solo activar si no hay espacio después de @ (es una mención en curso)
+            if ' ' not in after_at and '\n' not in after_at:
+                # Eliminar el @ del prefijo para que coincida con los nombres
+                prefix = after_at[1:] if len(after_at) > 1 else ""
+                completer.setCompletionPrefix(prefix)
+                if completer.completionCount() > 0:
+                    completer.complete()
+                return
+        completer.popup().hide()
+
+    text_edit.textChanged.connect(on_text_changed)
+    return completer

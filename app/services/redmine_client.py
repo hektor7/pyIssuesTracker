@@ -22,6 +22,7 @@ class RedmineIssue:
     subject: str
     description: str = ""
     start_date: str = ""
+    due_date: str = ""
     status_name: str = ""
     status_id: int = 0
     done_ratio: int = 0
@@ -274,6 +275,8 @@ class RedmineClient:
         category_id: int | None = None,
         priority_id: int | None = None,
         assigned_to_id: int | str | None = None,
+        due_date_from: str | None = None,
+        due_date_to: str | None = None,
         limit: int = REDMINE_PAGE_LIMIT,
         offset: int = 0,
     ) -> list[RedmineIssue]:
@@ -297,6 +300,12 @@ class RedmineClient:
             params["assigned_to_id"] = "me"
         elif assigned_to_id:
             params["assigned_to_id"] = assigned_to_id
+        if due_date_from and due_date_to:
+            params["due_date"] = f"><{due_date_from}|{due_date_to}"
+        elif due_date_from:
+            params["due_date"] = f">={due_date_from}"
+        elif due_date_to:
+            params["due_date"] = f"<={due_date_to}"
 
         raw = self._get("/issues.json", params=params)
         issues_raw = raw.get("issues", [])
@@ -308,6 +317,7 @@ class RedmineClient:
                 subject=i.get("subject", ""),
                 description=i.get("description", ""),
                 start_date=i.get("start_date", ""),
+                due_date=i.get("due_date", ""),
                 status_name=i.get("status", {}).get("name", ""),
                 status_id=i.get("status", {}).get("id", 0),
                 done_ratio=i.get("done_ratio", 0),

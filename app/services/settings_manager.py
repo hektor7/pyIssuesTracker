@@ -31,6 +31,9 @@ from app.utils.constants import (
     KEY_NOTIFICATIONS_PROJECTS,
     KEY_NOTIFICATIONS_ASSIGNED_ONLY,
     KEY_NOTIFICATIONS_POLL_INTERVAL,
+    KEY_FILTER_DATE_PRESET,
+    KEY_FILTER_DATE_FROM,
+    KEY_FILTER_DATE_TO,
     DEFAULT_REDMINE_URL,
     DEFAULT_API_KEY,
 )
@@ -48,7 +51,10 @@ class SettingsManager:
 
     @redmine_url.setter
     def redmine_url(self, value: str):
-        self._settings.setValue(KEY_REDMINE_URL, value)
+        url = value.strip().rstrip("/")
+        if url and not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        self._settings.setValue(KEY_REDMINE_URL, url)
 
     @property
     def redmine_api_key(self) -> str:
@@ -235,6 +241,31 @@ class SettingsManager:
     @filter_assigned_to.setter
     def filter_assigned_to(self, value: int):
         self._settings.setValue(KEY_FILTER_ASSIGNED_TO, value)
+
+    @property
+    def filter_date_preset(self) -> int:
+        val = self._settings.value(KEY_FILTER_DATE_PRESET, 0)
+        return int(val) if val else 0
+
+    @filter_date_preset.setter
+    def filter_date_preset(self, value: int):
+        self._settings.setValue(KEY_FILTER_DATE_PRESET, value)
+
+    @property
+    def filter_date_from(self) -> str:
+        return self._settings.value(KEY_FILTER_DATE_FROM, "")
+
+    @filter_date_from.setter
+    def filter_date_from(self, value: str):
+        self._settings.setValue(KEY_FILTER_DATE_FROM, value)
+
+    @property
+    def filter_date_to(self) -> str:
+        return self._settings.value(KEY_FILTER_DATE_TO, "")
+
+    @filter_date_to.setter
+    def filter_date_to(self, value: str):
+        self._settings.setValue(KEY_FILTER_DATE_TO, value)
 
     # ---- Ventana ----
 

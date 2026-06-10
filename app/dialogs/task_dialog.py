@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QLabel, QSpinBox, QMessageBox, QGroupBox,
     QDateEdit, QSlider, QHBoxLayout, QScrollArea,
     QWidget, QCompleter, QSizePolicy,
-    QPushButton, QFileDialog, QFrame,
+    QPushButton, QFileDialog, QFrame, QCheckBox,
 )
 
 from app.services.redmine_client import RedmineClient
@@ -108,6 +108,11 @@ class TaskDialog(QDialog):
         self._description_edit.setPlaceholderText("Descripción detallada...")
         self._description_edit.setMinimumHeight(100)
         basic_form.addRow("Descripción:", self._description_edit)
+        # Configurar autocompletado @usuario en descripción
+        if self._members:
+            from app.widgets.comments_widget import setup_mention_completer
+            names = [name for _, name in self._members]
+            setup_mention_completer(self._description_edit, names)
 
         scroll_layout.addWidget(basic_group)
 
@@ -152,6 +157,22 @@ class TaskDialog(QDialog):
         self._date_edit.setDate(date.today())
         details_form.addRow("Fecha inicio:", self._date_edit)
 
+        # Fecha de fin
+        due_widget = QWidget()
+        due_layout = QHBoxLayout(due_widget)
+        due_layout.setContentsMargins(0, 0, 0, 0)
+        due_layout.setSpacing(4)
+        self._due_check = QCheckBox("Fecha fin:")
+        self._due_check.toggled.connect(lambda checked: self._due_edit.setEnabled(checked))
+        due_layout.addWidget(self._due_check)
+        self._due_edit = QDateEdit()
+        self._due_edit.setCalendarPopup(True)
+        self._due_edit.setDisplayFormat("yyyy-MM-dd")
+        self._due_edit.setDate(date.today())
+        self._due_edit.setEnabled(False)
+        due_layout.addWidget(self._due_edit)
+        details_form.addRow("", due_widget)
+
         # Progreso
         progress_widget = QWidget()
         progress_layout = QHBoxLayout(progress_widget)
@@ -195,6 +216,8 @@ class TaskDialog(QDialog):
         comments_layout = QVBoxLayout(self._comments_group)
         self._comments_widget = CommentsWidget()
         self._comments_widget.nota_agregada.connect(self._on_add_comment)
+        if self._members:
+            self._comments_widget.set_members(self._members)
         comments_layout.addWidget(self._comments_widget)
         self._comments_group.setVisible(False)  # Oculto en nueva tarea
         scroll_layout.addWidget(self._comments_group)
@@ -305,6 +328,16 @@ class TaskDialog(QDialog):
             try:
                 d = date.fromisoformat(start_str)
                 self._date_edit.setDate(d)
+            except (ValueError, TypeError):
+                pass
+
+        # Fecha fin
+        due_str = self._task_data.get("due_date", "")
+        if due_str:
+            try:
+                d = date.fromisoformat(due_str)
+                self._due_edit.setDate(d)
+                self._due_check.setChecked(True)
             except (ValueError, TypeError):
                 pass
 
@@ -667,6 +700,14 @@ class TaskDialog(QDialog):
     @property
     def start_date(self) -> str:
         return self._date_edit.date().toString("yyyy-MM-dd")
+
+    @property
+    def due_date(self) -> str:
+        return self._due_edit.date().toString("yyyy-MM-dd")
+
+    @property
+    def due_enabled(self) -> bool:
+        return self._due_check.isChecked()
 
     @property
     def done_ratio(self) -> int:

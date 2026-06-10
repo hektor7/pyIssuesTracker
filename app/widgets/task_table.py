@@ -1,9 +1,11 @@
-from PyQt6.QtCore import pyqtSignal, Qt, QUrl, QSize, QPoint
+from datetime import date
+
+from PyQt6.QtCore import pyqtSignal, Qt, QUrl, QSize, QPoint, QDate
 from PyQt6.QtGui import QDesktopServices, QIcon, QColor
 from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QPushButton, QToolButton, QToolTip, QStyle, QApplication,
-    QProgressBar, QMenu,
+    QProgressBar, QMenu, QDateEdit,
 )
 
 
@@ -11,16 +13,18 @@ class TaskTable(QTableWidget):
     tarea_doble_click = pyqtSignal(int)
     tarea_abrir_url = pyqtSignal(int, str)
     cambio_rapido = pyqtSignal(int, str, int)  # issue_id, tipo, valor
+    due_date_cambiada = pyqtSignal(int, str)  # issue_id, due_date
 
     COL_ID = 0
     COL_TITLE = 1
     COL_START_DATE = 2
-    COL_STATUS = 3
-    COL_ASSIGNED_TO = 4
-    COL_PROGRESS = 5
-    COL_URL = 6
+    COL_DUE_DATE = 3
+    COL_STATUS = 4
+    COL_ASSIGNED_TO = 5
+    COL_PROGRESS = 6
+    COL_URL = 7
 
-    HEADERS = ["ID", "Título", "Fecha inicio", "Estado", "Asignado a", "Progreso %", ""]
+    HEADERS = ["ID", "Título", "Fecha inicio", "Fecha fin", "Estado", "Asignado a", "Progreso %", ""]
 
     _BG_INMEDIATA = QColor(200, 0, 0)
     _BG_URGENTE = QColor(180, 20, 20)
@@ -43,6 +47,7 @@ class TaskTable(QTableWidget):
         header.setSectionResizeMode(self.COL_ID, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(self.COL_START_DATE, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self.COL_DUE_DATE, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_STATUS, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_ASSIGNED_TO, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_PROGRESS, QHeaderView.ResizeMode.ResizeToContents)
@@ -66,8 +71,37 @@ class TaskTable(QTableWidget):
         self._frequent_people_names = member_names
 
     def _on_double_click(self, row: int, col: int):
-        if row < len(self._issues):
+        if row >= len(self._issues):
+            return
+        if col == self.COL_DUE_DATE:
+            due_str = self._issues[row].get("due_date", "")
+            d = date.today()
+            if due_str:
+                try:
+                    d = date.fromisoformat(due_str)
+                except (ValueError, TypeError):
+                    pass
+            date_edit = QDateEdit(QDate(d.year, d.month, d.day))
+            date_edit.setCalendarPopup(True)
+            date_edit.setDisplayFormat("yyyy-MM-dd")
+            self.setCellWidget(row, self.COL_DUE_DATE, date_edit)
+            date_edit.editingFinished.connect(lambda r=row, de=date_edit: self._on_due_date_edited(r, de))
+            date_edit.setFocus()
+            date_edit.show()
+        else:
             self.tarea_doble_click.emit(self._issues[row]["id"])
+
+    def _on_due_date_edited(self, row: int, date_edit: QDateEdit):
+        if row >= len(self._issues):
+            return
+        issue_id = self._issues[row]["id"]
+        new_due = date_edit.date().toString("yyyy-MM-dd") if date_edit.date().isValid() else ""
+        self.removeCellWidget(row, self.COL_DUE_DATE)
+        self._issues[row]["due_date"] = new_due
+        due_item = QTableWidgetItem(new_due)
+        due_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setItem(row, self.COL_DUE_DATE, due_item)
+        self.due_date_cambiada.emit(issue_id, new_due)
 
     def _show_context_menu(self, pos: QPoint):
         row = self.rowAt(pos.y())
@@ -83,6 +117,15 @@ class TaskTable(QTableWidget):
             self._show_assign_menu(pos, issue_id)
         elif col == self.COL_STATUS:
             self._show_status_menu(pos, issue_id, issue.get("status_id", 0))
+        else:
+            # Generic context menu with "Abrir en Redmine"
+            menu = QMenu(self)
+            action_open = menu.addAction("Abrir en Redmine")
+            issue_url = issue.get("url", "")
+            action_open.triggered.connect(lambda checked, iid=issue_id, url=issue_url:
+                                           self.tarea_abrir_url.emit(iid, url))
+            menu.exec(self.viewport().mapToGlobal(pos))
+            return
 
     def _show_progress_menu(self, pos: QPoint, issue_id: int, current: int):
         menu = QMenu(self)
@@ -92,6 +135,9 @@ class TaskTable(QTableWidget):
             if pct == current:
                 action.setChecked(True)
             action.triggered.connect(lambda checked, v=pct: self.cambio_rapido.emit(issue_id, "progreso", v))
+        menu.addSeparator()
+        action_open = menu.addAction("Abrir en Redmine")
+        action_open.triggered.connect(lambda checked, iid=issue_id: self.tarea_abrir_url.emit(iid, ""))
         menu.exec(self.viewport().mapToGlobal(pos))
 
     def _show_status_menu(self, pos: QPoint, issue_id: int, current_status_id: int):
@@ -102,6 +148,9 @@ class TaskTable(QTableWidget):
             if sid == current_status_id:
                 action.setChecked(True)
             action.triggered.connect(lambda checked, v=sid: self.cambio_rapido.emit(issue_id, "estado", v))
+        menu.addSeparator()
+        action_open = menu.addAction("Abrir en Redmine")
+        action_open.triggered.connect(lambda checked, iid=issue_id: self.tarea_abrir_url.emit(iid, ""))
         menu.exec(self.viewport().mapToGlobal(pos))
 
     def _show_assign_menu(self, pos: QPoint, issue_id: int):
@@ -123,6 +172,9 @@ class TaskTable(QTableWidget):
             accion_vacia = menu.addAction("No hay personas frecuentes")
             accion_vacia.setEnabled(False)
 
+        menu.addSeparator()
+        action_open = menu.addAction("Abrir en Redmine")
+        action_open.triggered.connect(lambda checked, iid=issue_id: self.tarea_abrir_url.emit(iid, ""))
         menu.exec(self.viewport().mapToGlobal(pos))
 
     def _priority_bg(self, priority_name: str) -> QColor | None:
@@ -199,10 +251,11 @@ class TaskTable(QTableWidget):
     def set_issues(self, issues: list[dict]):
         self._issues = issues
         self.setRowCount(len(issues))
-        # Limpiar widgets de celdas previos (barras de progreso y botones)
+        # Limpiar widgets de celdas previos (barras de progreso, botones y date edits)
         for row in range(self.rowCount()):
             self.removeCellWidget(row, self.COL_PROGRESS)
             self.removeCellWidget(row, self.COL_URL)
+            self.removeCellWidget(row, self.COL_DUE_DATE)
         for row, issue in enumerate(issues):
             bg_color = self._priority_bg(issue.get("priority_name", ""))
 
@@ -235,6 +288,13 @@ class TaskTable(QTableWidget):
                 start_item.setBackground(bg_color)
                 start_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_START_DATE, start_item)
+
+            due_item = QTableWidgetItem(issue.get("due_date", ""))
+            due_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if bg_color:
+                due_item.setBackground(bg_color)
+                due_item.setForeground(Qt.GlobalColor.white)
+            self.setItem(row, self.COL_DUE_DATE, due_item)
 
             status_item = QTableWidgetItem(issue.get("status_name", ""))
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)

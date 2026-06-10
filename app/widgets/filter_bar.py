@@ -1,7 +1,9 @@
+from datetime import date, timedelta
+
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QComboBox, QCheckBox, QLabel,
-    QCompleter, QLineEdit,
+    QCompleter, QLineEdit, QDateEdit,
 )
 
 
@@ -13,6 +15,7 @@ class FilterBar(QWidget):
     asignado_cambiado = pyqtSignal(int)
     fijar_cambiado = pyqtSignal(bool)
     busqueda_cambiada = pyqtSignal(str)
+    fecha_cambiada = pyqtSignal(str, str)  # due_date_from, due_date_to
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -104,6 +107,34 @@ class FilterBar(QWidget):
         self._assigned_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._assigned_completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self._assigned_combo.setCompleter(self._assigned_completer)
+
+        row1.addSpacing(16)
+        row1.addWidget(QLabel("Fecha fin:"))
+
+        self._date_preset_combo = QComboBox()
+        self._date_preset_combo.addItems([
+            "Sin filtro", "Hoy", "Ayer", "Esta semana",
+            "Semana pasada", "Este mes", "Mes pasado",
+            "Rango personalizado",
+        ])
+        self._date_preset_combo.currentIndexChanged.connect(self._on_date_preset_changed)
+        row1.addWidget(self._date_preset_combo)
+
+        self._date_from_edit = QDateEdit()
+        self._date_from_edit.setCalendarPopup(True)
+        self._date_from_edit.setDisplayFormat("yyyy-MM-dd")
+        self._date_from_edit.setDate(date.today())
+        self._date_from_edit.setVisible(False)
+        row1.addWidget(self._date_from_edit)
+
+        self._date_to_edit = QDateEdit()
+        self._date_to_edit.setCalendarPopup(True)
+        self._date_to_edit.setDisplayFormat("yyyy-MM-dd")
+        self._date_to_edit.setDate(date.today())
+        self._date_to_edit.setVisible(False)
+        row1.addWidget(self._date_to_edit)
+        self._date_from_edit.dateChanged.connect(self._on_date_from_changed)
+        self._date_to_edit.dateChanged.connect(self._on_date_to_changed)
 
         row1.addStretch()
         main_layout.addLayout(row1)
@@ -304,6 +335,74 @@ class FilterBar(QWidget):
             if text in self._assigned_combo.itemText(i).lower():
                 self._assigned_combo.setCurrentIndex(i)
                 return
+
+    def _on_date_preset_changed(self, index: int):
+        today = date.today()
+        if index == 0:  # Sin filtro
+            self._date_from_edit.setVisible(False)
+            self._date_to_edit.setVisible(False)
+            self.fecha_cambiada.emit("", "")
+        elif index == 1:  # Hoy
+            self._date_from_edit.setVisible(False)
+            self._date_to_edit.setVisible(False)
+            self.fecha_cambiada.emit(today.isoformat(), today.isoformat())
+        elif index == 2:  # Ayer
+            self._date_from_edit.setVisible(False)
+            self._date_to_edit.setVisible(False)
+            yesterday = today - timedelta(days=1)
+            self.fecha_cambiada.emit(yesterday.isoformat(), yesterday.isoformat())
+        elif index == 3:  # Esta semana
+            self._date_from_edit.setVisible(False)
+            self._date_to_edit.setVisible(False)
+            monday = today - timedelta(days=today.weekday())
+            sunday = monday + timedelta(days=6)
+            self.fecha_cambiada.emit(monday.isoformat(), sunday.isoformat())
+        elif index == 4:  # Semana pasada
+            self._date_from_edit.setVisible(False)
+            self._date_to_edit.setVisible(False)
+            monday = today - timedelta(days=today.weekday() + 7)
+            sunday = monday + timedelta(days=6)
+            self.fecha_cambiada.emit(monday.isoformat(), sunday.isoformat())
+        elif index == 5:  # Este mes
+            self._date_from_edit.setVisible(False)
+            self._date_to_edit.setVisible(False)
+            first = today.replace(day=1)
+            if today.month == 12:
+                last = today.replace(year=today.year + 1, month=1, day=1) - timedelta(days=1)
+            else:
+                last = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
+            self.fecha_cambiada.emit(first.isoformat(), last.isoformat())
+        elif index == 6:  # Mes pasado
+            self._date_from_edit.setVisible(False)
+            self._date_to_edit.setVisible(False)
+            if today.month == 1:
+                first = today.replace(year=today.year - 1, month=12, day=1)
+                last = today.replace(day=1) - timedelta(days=1)
+            else:
+                first = today.replace(month=today.month - 1, day=1)
+                last = today.replace(day=1) - timedelta(days=1)
+            self.fecha_cambiada.emit(first.isoformat(), last.isoformat())
+        elif index == 7:  # Rango personalizado
+            self._date_from_edit.setVisible(True)
+            self._date_to_edit.setVisible(True)
+            self.fecha_cambiada.emit(
+                self._date_from_edit.date().toString("yyyy-MM-dd"),
+                self._date_to_edit.date().toString("yyyy-MM-dd"),
+            )
+
+    def _on_date_from_changed(self):
+        if self._date_preset_combo.currentIndex() == 7:
+            self.fecha_cambiada.emit(
+                self._date_from_edit.date().toString("yyyy-MM-dd"),
+                self._date_to_edit.date().toString("yyyy-MM-dd"),
+            )
+
+    def _on_date_to_changed(self):
+        if self._date_preset_combo.currentIndex() == 7:
+            self.fecha_cambiada.emit(
+                self._date_from_edit.date().toString("yyyy-MM-dd"),
+                self._date_to_edit.date().toString("yyyy-MM-dd"),
+            )
 
     def _on_search_text_changed(self, text: str):
         self.busqueda_cambiada.emit(text)

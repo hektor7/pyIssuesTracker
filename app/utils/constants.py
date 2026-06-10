@@ -62,6 +62,9 @@ KEY_NOTIFICATIONS_ENABLED = "notifications/enabled"
 KEY_NOTIFICATIONS_PROJECTS = "notifications/projects"
 KEY_NOTIFICATIONS_ASSIGNED_ONLY = "notifications/assigned_only"
 KEY_NOTIFICATIONS_POLL_INTERVAL = "notifications/poll_interval"
+KEY_FILTER_DATE_PRESET = "filter/date_preset"
+KEY_FILTER_DATE_FROM = "filter/date_from"
+KEY_FILTER_DATE_TO = "filter/date_to"
 
 # ============================================================
 # Temas disponibles
