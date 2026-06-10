@@ -202,13 +202,29 @@ class TaskTable(QTableWidget):
         elif col == self.COL_DUE_DATE:
             self._show_due_date_menu(pos, issue_id, issue.get("due_date", ""), issue_url)
         else:
-            # Generic context menu with "Abrir en Redmine"
+            # Generic context menu
             menu = QMenu(self)
+            self._add_copy_url_action(menu, issue_url)
+            menu.addSeparator()
             action_open = menu.addAction("Abrir en Redmine")
             action_open.triggered.connect(lambda checked, iid=issue_id, url=issue_url:
                                            self.tarea_abrir_url.emit(iid, url))
             menu.exec(self.viewport().mapToGlobal(pos))
             return
+
+    @staticmethod
+    def _build_issue_url(issue_url: str | None) -> str:
+        """Devuelve la URL limpia, o cadena vacía si no hay."""
+        return (issue_url or "").strip()
+
+    def _add_copy_url_action(self, menu: QMenu, issue_url: str):
+        """Añade acción 'Copiar URL' al menú contextual."""
+        url = self._build_issue_url(issue_url)
+        action_copy = menu.addAction("Copiar URL")
+        if not url:
+            action_copy.setEnabled(False)
+        else:
+            action_copy.triggered.connect(lambda checked, u=url: QApplication.clipboard().setText(u))
 
     def _show_progress_menu(self, pos: QPoint, issue_id: int, current: int, issue_url: str):
         menu = QMenu(self)
@@ -219,6 +235,7 @@ class TaskTable(QTableWidget):
                 action.setChecked(True)
             action.triggered.connect(lambda checked, v=pct: self.cambio_rapido.emit(issue_id, "progreso", v))
         menu.addSeparator()
+        self._add_copy_url_action(menu, issue_url)
         action_open = menu.addAction("Abrir en Redmine")
         action_open.triggered.connect(lambda checked, iid=issue_id, url=issue_url: self.tarea_abrir_url.emit(iid, url))
         menu.exec(self.viewport().mapToGlobal(pos))
@@ -230,6 +247,7 @@ class TaskTable(QTableWidget):
         action_clear.setEnabled(not due_empty)
         action_clear.triggered.connect(lambda checked: self.due_date_cambiada.emit(issue_id, ""))
         menu.addSeparator()
+        self._add_copy_url_action(menu, issue_url)
         action_open = menu.addAction("Abrir en Redmine")
         action_open.triggered.connect(lambda checked, iid=issue_id, url=issue_url: self.tarea_abrir_url.emit(iid, url))
         menu.exec(self.viewport().mapToGlobal(pos))
@@ -243,6 +261,7 @@ class TaskTable(QTableWidget):
                 action.setChecked(True)
             action.triggered.connect(lambda checked, v=sid: self.cambio_rapido.emit(issue_id, "estado", v))
         menu.addSeparator()
+        self._add_copy_url_action(menu, issue_url)
         action_open = menu.addAction("Abrir en Redmine")
         action_open.triggered.connect(lambda checked, iid=issue_id, url=issue_url: self.tarea_abrir_url.emit(iid, url))
         menu.exec(self.viewport().mapToGlobal(pos))
@@ -267,6 +286,7 @@ class TaskTable(QTableWidget):
             accion_vacia.setEnabled(False)
 
         menu.addSeparator()
+        self._add_copy_url_action(menu, issue_url)
         action_open = menu.addAction("Abrir en Redmine")
         action_open.triggered.connect(lambda checked, iid=issue_id, url=issue_url: self.tarea_abrir_url.emit(iid, url))
         menu.exec(self.viewport().mapToGlobal(pos))
