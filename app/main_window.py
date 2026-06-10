@@ -127,6 +127,12 @@ class MainWindow(QMainWindow):
 
         archivo_menu.addSeparator()
 
+        action_update = QAction("&Buscar actualizaciones...", self)
+        action_update.triggered.connect(self._buscar_actualizaciones)
+        archivo_menu.addAction(action_update)
+
+        archivo_menu.addSeparator()
+
         action_salir = QAction("&Salir", self)
         action_salir.setShortcut("Ctrl+Q")
         action_salir.triggered.connect(self._salir)
@@ -166,8 +172,54 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def _auto_connect(self):
+        # Verificar actualizaciones tras un breve retraso para no bloquear el arranque
+        QTimer.singleShot(2000, self._check_updates_auto)
+
         if self._settings.redmine_configured:
             self._conectar_redmine()
+
+    def _check_updates_auto(self):
+        """Verifica actualizaciones automáticamente si han pasado más de 24h desde la última."""
+        from datetime import datetime, timedelta
+
+        last_check_str = self._settings.last_update_check
+        should_check = True
+        if last_check_str:
+            try:
+                last_check = datetime.fromisoformat(last_check_str)
+                if datetime.now() - last_check < timedelta(hours=24):
+                    should_check = False
+            except (ValueError, TypeError):
+                pass
+
+        if not should_check:
+            return
+
+        proxy_url = self._settings.build_proxy_url()
+        um = UpdateManager(proxy_url=proxy_url)
+        info = um.check_for_updates()
+        self._settings.last_update_check = datetime.now().isoformat()
+
+        if info.available:
+            from app.dialogs.update_dialog import UpdateDialog
+            dlg = UpdateDialog(info, um, self)
+            dlg.exec()
+
+    def _buscar_actualizaciones(self):
+        """Busca actualizaciones manualmente (menú Archivo > Buscar actualizaciones...)."""
+        proxy_url = self._settings.build_proxy_url()
+        um = UpdateManager(proxy_url=proxy_url)
+        info = um.check_for_updates()
+        if info.available:
+            from app.dialogs.update_dialog import UpdateDialog
+            dlg = UpdateDialog(info, um, self)
+            dlg.exec()
+        else:
+            QMessageBox.information(
+                self, "Actualización",
+                "No hay actualizaciones disponibles.\n"
+                "Ya tienes la versión más reciente.",
+            )
 
     def _conectar_redmine(self):
         if not self._settings.redmine_configured:

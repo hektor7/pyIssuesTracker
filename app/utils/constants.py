@@ -13,7 +13,7 @@ APP_DISPLAY_NAME = "PyIssuesTracker"
 # ============================================================
 # GitHub (auto-update)
 # ============================================================
-GITHUB_REPO_OWNER = "hector"
+GITHUB_REPO_OWNER = "hektor7"
 GITHUB_REPO_NAME = "pyIssuesTracker"
 GITHUB_API_RELEASES = (
     f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases"

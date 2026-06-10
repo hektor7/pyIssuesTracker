@@ -1,4 +1,6 @@
+import sys
 from datetime import datetime
+from typing import Callable
 
 import httpx
 from packaging.version import Version
@@ -55,18 +57,39 @@ class UpdateManager:
         except Exception:
             return UpdateInfo(version="", url="", available=False)
 
+        # Seleccionar asset según la plataforma
+        assets = latest_stable.get("assets", [])
+        if not assets:
+            return UpdateInfo(version="", url="", available=False)
+
+        if sys.platform == "win32":
+            matching = [a for a in assets if a.get("name", "").endswith(".exe")]
+        else:
+            matching = [a for a in assets if not a.get("name", "").endswith(".exe")]
+
+        if not matching:
+            return UpdateInfo(version="", url="", available=False)
+
+        download_url = matching[0].get("browser_download_url", "")
+        if not download_url:
+            return UpdateInfo(version="", url="", available=False)
+
         available = remote_version > self._current_version
-        html_url = latest_stable.get("html_url", "")
         notes = latest_stable.get("body", "")
 
         return UpdateInfo(
             version=tag,
-            url=html_url,
+            url=download_url,
             notes=notes[:500] if notes else "",
             available=available,
         )
 
-    def download_release(self, url: str, dest_path: str) -> bool:
+    def download_release(
+        self,
+        url: str,
+        dest_path: str,
+        progress_callback: Callable[[int], None] | None = None,
+    ) -> bool:
         with httpx.Client(
             timeout=300,
             follow_redirects=True,
@@ -75,9 +98,19 @@ class UpdateManager:
             try:
                 with client.stream("GET", url) as resp:
                     resp.raise_for_status()
+                    total = resp.headers.get("content-length")
+                    total = int(total) if total else None
+                    downloaded = 0
                     with open(dest_path, "wb") as f:
-                        for chunk in resp.iter_bytes(chunk_size=8192):
+                        for chunk in resp.iter_bytes(chunk_size=65536):
                             f.write(chunk)
+                            if progress_callback is not None:
+                                downloaded += len(chunk)
+                                if total:
+                                    percent = int(downloaded * 100 / total)
+                                    progress_callback(percent)
+                                else:
+                                    progress_callback(-1)
                 return True
             except Exception:
                 return False

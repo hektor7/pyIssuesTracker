@@ -1,6 +1,8 @@
 name: Build Release Executables
 
 on:
+  push:
+    tags: ['v*']
   release:
     types: [published]
 
