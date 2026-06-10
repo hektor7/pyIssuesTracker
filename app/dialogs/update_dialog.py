@@ -1,6 +1,8 @@
 """Diálogo de actualización: muestra nueva versión, notas y progreso de descarga."""
 
 import os
+import shutil
+import sys
 import tempfile
 from urllib.parse import unquote, urlparse
 
@@ -131,7 +133,16 @@ class UpdateDialog(QDialog):
             return
 
         asset_name = self._asset_name_from_url(self._info.url)
-        dest_path = os.path.join(tempfile.gettempdir(), asset_name)
+
+        # Si estamos en un bundle congelado (PyInstaller), descargar junto al ejecutable
+        # para reemplazo transparente. Si no, usar /tmp/ como antes.
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(sys.executable)
+            dest_path = os.path.join(exe_dir, asset_name + ".new")
+        else:
+            dest_path = os.path.join(tempfile.gettempdir(), asset_name)
+
+        self._dest_path = dest_path
 
         # Deshabilitar botón de descarga
         if self._buttons.download_button:
@@ -171,9 +182,46 @@ class UpdateDialog(QDialog):
         self._progress_bar.setVisible(False)
 
         if success:
-            self._status_label.setText(
-                f"Archivo guardado en:\n{filepath}"
-            )
+            dest_path = getattr(self, '_dest_path', filepath)
+            replaced = False
+
+            # Si es bundle congelado, reemplazar el binario automáticamente
+            if getattr(sys, 'frozen', False) and hasattr(self, '_dest_path'):
+                try:
+                    exe_path = sys.executable
+                    exe_dir = os.path.dirname(exe_path)
+                    exe_name = os.path.basename(exe_path)
+                    new_path = dest_path
+                    final_path = os.path.join(exe_dir, exe_name)
+                    old_path = final_path + ".old"
+
+                    # Dar permisos de ejecución al nuevo binario
+                    os.chmod(new_path, 0o755)
+
+                    # Renombrar binario actual a .old, mover nuevo a su lugar
+                    if os.path.exists(old_path):
+                        os.remove(old_path)
+                    shutil.move(final_path, old_path)
+                    shutil.move(new_path, final_path)
+
+                    replaced = True
+                    self._status_label.setText(
+                        f"Actualización completada.\n"
+                        f"Reinicie la aplicación para aplicar los cambios.\n\n"
+                        f"(Respaldo guardado en: {old_path})"
+                    )
+                except OSError as e:
+                    self._status_label.setText(
+                        f"Actualización descargada, pero no se pudo reemplazar el binario:\n"
+                        f"{e}\n\n"
+                        f"Archivo nuevo en:\n{new_path}\n"
+                        f"Reemplace manualmente el archivo:\n{exe_path}"
+                    )
+
+            if not replaced:
+                self._status_label.setText(
+                    f"Archivo guardado en:\n{filepath}"
+                )
             self._status_label.setVisible(True)
             # Cambiar botón Descargar por Cerrar
             if self._buttons.download_button:

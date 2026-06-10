@@ -655,6 +655,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self._redmine.update_issue(issue_id, due_date=due_date if due_date else "")
+            self._task_table.refresh_due_date_cell(issue_id, due_date)
         except RedmineError as e:
             QMessageBox.warning(self, "Error", f"No se pudo actualizar la fecha de fin:\n{str(e)}")
 

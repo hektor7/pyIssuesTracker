@@ -103,6 +103,23 @@ class TaskTable(QTableWidget):
         self.setItem(row, self.COL_DUE_DATE, due_item)
         self.due_date_cambiada.emit(issue_id, new_due)
 
+    def refresh_due_date_cell(self, issue_id: int, due_date: str):
+        """Actualiza la celda de fecha fin para un issue (usado tras menú contextual)."""
+        for row, issue in enumerate(self._issues):
+            if issue["id"] == issue_id:
+                self._issues[row]["due_date"] = due_date
+                due_item = QTableWidgetItem(due_date if due_date else "")
+                due_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                # Mantener colores de prioridad si existen
+                priority = issue.get("priority_name", "")
+                bg_color = self._priority_bg(priority)
+                if bg_color:
+                    due_item.setBackground(bg_color)
+                    due_item.setForeground(Qt.GlobalColor.white)
+                self.removeCellWidget(row, self.COL_DUE_DATE)
+                self.setItem(row, self.COL_DUE_DATE, due_item)
+                break
+
     def _show_context_menu(self, pos: QPoint):
         row = self.rowAt(pos.y())
         col = self.columnAt(pos.x())

@@ -75,7 +75,12 @@ class UpdateManager:
             return UpdateInfo(version="", url="", available=False)
 
         available = remote_version > self._current_version
-        notes = latest_stable.get("body", "")
+        notes = latest_stable.get("body", "") or ""
+        # Si el release no tiene notas, generar texto mínimo
+        if not notes.strip():
+            release_name = latest_stable.get("name", "") or tag
+            release_url = latest_stable.get("html_url", "")
+            notes = f"{release_name}\n\n🔗 {release_url}" if release_url else release_name
 
         return UpdateInfo(
             version=tag,
