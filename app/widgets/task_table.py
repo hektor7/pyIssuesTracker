@@ -110,24 +110,26 @@ class TaskTable(QTableWidget):
             return
         issue = self._issues[row]
         issue_id = issue["id"]
+        issue_url = issue.get("url", "")
 
         if col == self.COL_PROGRESS:
-            self._show_progress_menu(pos, issue_id, issue.get("done_ratio", 0))
+            self._show_progress_menu(pos, issue_id, issue.get("done_ratio", 0), issue_url)
         elif col == self.COL_ASSIGNED_TO:
-            self._show_assign_menu(pos, issue_id)
+            self._show_assign_menu(pos, issue_id, issue_url)
         elif col == self.COL_STATUS:
-            self._show_status_menu(pos, issue_id, issue.get("status_id", 0))
+            self._show_status_menu(pos, issue_id, issue.get("status_id", 0), issue_url)
+        elif col == self.COL_DUE_DATE:
+            self._show_due_date_menu(pos, issue_id, issue.get("due_date", ""), issue_url)
         else:
             # Generic context menu with "Abrir en Redmine"
             menu = QMenu(self)
             action_open = menu.addAction("Abrir en Redmine")
-            issue_url = issue.get("url", "")
             action_open.triggered.connect(lambda checked, iid=issue_id, url=issue_url:
                                            self.tarea_abrir_url.emit(iid, url))
             menu.exec(self.viewport().mapToGlobal(pos))
             return
 
-    def _show_progress_menu(self, pos: QPoint, issue_id: int, current: int):
+    def _show_progress_menu(self, pos: QPoint, issue_id: int, current: int, issue_url: str):
         menu = QMenu(self)
         for pct in (0, 20, 40, 60, 80, 100):
             action = menu.addAction(f"{pct}%")
@@ -137,10 +139,21 @@ class TaskTable(QTableWidget):
             action.triggered.connect(lambda checked, v=pct: self.cambio_rapido.emit(issue_id, "progreso", v))
         menu.addSeparator()
         action_open = menu.addAction("Abrir en Redmine")
-        action_open.triggered.connect(lambda checked, iid=issue_id: self.tarea_abrir_url.emit(iid, ""))
+        action_open.triggered.connect(lambda checked, iid=issue_id, url=issue_url: self.tarea_abrir_url.emit(iid, url))
         menu.exec(self.viewport().mapToGlobal(pos))
 
-    def _show_status_menu(self, pos: QPoint, issue_id: int, current_status_id: int):
+    def _show_due_date_menu(self, pos: QPoint, issue_id: int, due_date: str, issue_url: str):
+        menu = QMenu(self)
+        due_empty = not due_date or due_date.strip() == ""
+        action_clear = menu.addAction("Limpiar fecha fin")
+        action_clear.setEnabled(not due_empty)
+        action_clear.triggered.connect(lambda checked: self.due_date_cambiada.emit(issue_id, ""))
+        menu.addSeparator()
+        action_open = menu.addAction("Abrir en Redmine")
+        action_open.triggered.connect(lambda checked, iid=issue_id, url=issue_url: self.tarea_abrir_url.emit(iid, url))
+        menu.exec(self.viewport().mapToGlobal(pos))
+
+    def _show_status_menu(self, pos: QPoint, issue_id: int, current_status_id: int, issue_url: str):
         menu = QMenu(self)
         for sid, sname in self._statuses:
             action = menu.addAction(sname)
@@ -150,10 +163,10 @@ class TaskTable(QTableWidget):
             action.triggered.connect(lambda checked, v=sid: self.cambio_rapido.emit(issue_id, "estado", v))
         menu.addSeparator()
         action_open = menu.addAction("Abrir en Redmine")
-        action_open.triggered.connect(lambda checked, iid=issue_id: self.tarea_abrir_url.emit(iid, ""))
+        action_open.triggered.connect(lambda checked, iid=issue_id, url=issue_url: self.tarea_abrir_url.emit(iid, url))
         menu.exec(self.viewport().mapToGlobal(pos))
 
-    def _show_assign_menu(self, pos: QPoint, issue_id: int):
+    def _show_assign_menu(self, pos: QPoint, issue_id: int, issue_url: str):
         menu = QMenu(self)
 
         accion_yo = menu.addAction("Asignarme a mí")
@@ -174,7 +187,7 @@ class TaskTable(QTableWidget):
 
         menu.addSeparator()
         action_open = menu.addAction("Abrir en Redmine")
-        action_open.triggered.connect(lambda checked, iid=issue_id: self.tarea_abrir_url.emit(iid, ""))
+        action_open.triggered.connect(lambda checked, iid=issue_id, url=issue_url: self.tarea_abrir_url.emit(iid, url))
         menu.exec(self.viewport().mapToGlobal(pos))
 
     def _priority_bg(self, priority_name: str) -> QColor | None:

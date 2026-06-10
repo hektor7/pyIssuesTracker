@@ -163,7 +163,7 @@ class TaskDialog(QDialog):
         due_layout.setContentsMargins(0, 0, 0, 0)
         due_layout.setSpacing(4)
         self._due_check = QCheckBox("Fecha fin:")
-        self._due_check.toggled.connect(lambda checked: self._due_edit.setEnabled(checked))
+        self._due_check.toggled.connect(self._on_due_check_toggled)
         due_layout.addWidget(self._due_check)
         self._due_edit = QDateEdit()
         self._due_edit.setCalendarPopup(True)
@@ -619,6 +619,15 @@ class TaskDialog(QDialog):
         elif size_bytes > 0:
             return f"{size_bytes} B"
         return ""
+
+    # ================================================================
+    # Fecha fin - toggle checkbox
+    # ================================================================
+
+    def _on_due_check_toggled(self, checked: bool):
+        self._due_edit.setEnabled(checked)
+        if not checked:
+            self._due_edit.setDate(date.today())
 
     # ================================================================
     # Progreso - sincronización slider/spin
