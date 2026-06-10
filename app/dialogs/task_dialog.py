@@ -153,7 +153,7 @@ class TaskDialog(QDialog):
         # Fecha de inicio
         self._date_edit = QDateEdit()
         self._date_edit.setCalendarPopup(True)
-        self._date_edit.setDisplayFormat("yyyy-MM-dd")
+        self._date_edit.setDisplayFormat("dd/MM/yyyy")
         self._date_edit.setDate(date.today())
         details_form.addRow("Fecha inicio:", self._date_edit)
 
@@ -167,7 +167,7 @@ class TaskDialog(QDialog):
         due_layout.addWidget(self._due_check)
         self._due_edit = QDateEdit()
         self._due_edit.setCalendarPopup(True)
-        self._due_edit.setDisplayFormat("yyyy-MM-dd")
+        self._due_edit.setDisplayFormat("dd/MM/yyyy")
         self._due_edit.setDate(date.today())
         self._due_edit.setEnabled(False)
         due_layout.addWidget(self._due_edit)

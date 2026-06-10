@@ -122,14 +122,14 @@ class FilterBar(QWidget):
 
         self._date_from_edit = QDateEdit()
         self._date_from_edit.setCalendarPopup(True)
-        self._date_from_edit.setDisplayFormat("yyyy-MM-dd")
+        self._date_from_edit.setDisplayFormat("dd/MM/yyyy")
         self._date_from_edit.setDate(date.today())
         self._date_from_edit.setVisible(False)
         row1.addWidget(self._date_from_edit)
 
         self._date_to_edit = QDateEdit()
         self._date_to_edit.setCalendarPopup(True)
-        self._date_to_edit.setDisplayFormat("yyyy-MM-dd")
+        self._date_to_edit.setDisplayFormat("dd/MM/yyyy")
         self._date_to_edit.setDate(date.today())
         self._date_to_edit.setVisible(False)
         row1.addWidget(self._date_to_edit)

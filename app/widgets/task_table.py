@@ -1,12 +1,14 @@
 from datetime import date
 
-from PyQt6.QtCore import pyqtSignal, Qt, QUrl, QSize, QPoint, QDate
+from PyQt6.QtCore import pyqtSignal, Qt, QUrl, QSize, QPoint, QDate, QEvent
 from PyQt6.QtGui import QDesktopServices, QIcon, QColor
 from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QPushButton, QToolButton, QToolTip, QStyle, QApplication,
     QProgressBar, QMenu, QDateEdit,
 )
+
+from app.utils.dates import iso_to_display
 
 
 class TaskTable(QTableWidget):
@@ -83,7 +85,8 @@ class TaskTable(QTableWidget):
                     pass
             date_edit = QDateEdit(QDate(d.year, d.month, d.day))
             date_edit.setCalendarPopup(True)
-            date_edit.setDisplayFormat("yyyy-MM-dd")
+            date_edit.setDisplayFormat("dd/MM/yyyy")
+            date_edit.installEventFilter(self)
             self.setCellWidget(row, self.COL_DUE_DATE, date_edit)
             date_edit.editingFinished.connect(lambda r=row, de=date_edit: self._on_due_date_edited(r, de))
             date_edit.setFocus()
@@ -91,24 +94,44 @@ class TaskTable(QTableWidget):
         else:
             self.tarea_doble_click.emit(self._issues[row]["id"])
 
+    def eventFilter(self, obj, event):
+        """Cierra el QDateEdit inline al presionar Escape (cancela sin cambios)."""
+        if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+            if isinstance(obj, QDateEdit):
+                for row in range(self.rowCount()):
+                    if self.cellWidget(row, self.COL_DUE_DATE) is obj:
+                        self.removeCellWidget(row, self.COL_DUE_DATE)
+                        old_due = self._issues[row].get("due_date", "")
+                        due_item = QTableWidgetItem(iso_to_display(old_due))
+                        due_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                        # Mantener colores de prioridad
+                        priority = self._issues[row].get("priority_name", "")
+                        bg_color = self._priority_bg(priority)
+                        if bg_color:
+                            due_item.setBackground(bg_color)
+                            due_item.setForeground(Qt.GlobalColor.white)
+                        self.setItem(row, self.COL_DUE_DATE, due_item)
+                        return True
+        return super().eventFilter(obj, event)
+
     def _on_due_date_edited(self, row: int, date_edit: QDateEdit):
         if row >= len(self._issues):
             return
         issue_id = self._issues[row]["id"]
-        new_due = date_edit.date().toString("yyyy-MM-dd") if date_edit.date().isValid() else ""
+        new_due_iso = date_edit.date().toString("yyyy-MM-dd") if date_edit.date().isValid() else ""
         self.removeCellWidget(row, self.COL_DUE_DATE)
-        self._issues[row]["due_date"] = new_due
-        due_item = QTableWidgetItem(new_due)
+        self._issues[row]["due_date"] = new_due_iso
+        due_item = QTableWidgetItem(iso_to_display(new_due_iso))
         due_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setItem(row, self.COL_DUE_DATE, due_item)
-        self.due_date_cambiada.emit(issue_id, new_due)
+        self.due_date_cambiada.emit(issue_id, new_due_iso)
 
     def refresh_due_date_cell(self, issue_id: int, due_date: str):
         """Actualiza la celda de fecha fin para un issue (usado tras menú contextual)."""
         for row, issue in enumerate(self._issues):
             if issue["id"] == issue_id:
                 self._issues[row]["due_date"] = due_date
-                due_item = QTableWidgetItem(due_date if due_date else "")
+                due_item = QTableWidgetItem(iso_to_display(due_date))
                 due_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 # Mantener colores de prioridad si existen
                 priority = issue.get("priority_name", "")
@@ -312,14 +335,14 @@ class TaskTable(QTableWidget):
                 title_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_TITLE, title_item)
 
-            start_item = QTableWidgetItem(issue.get("start_date", ""))
+            start_item = QTableWidgetItem(iso_to_display(issue.get("start_date", "")))
             start_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if bg_color:
                 start_item.setBackground(bg_color)
                 start_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_START_DATE, start_item)
 
-            due_item = QTableWidgetItem(issue.get("due_date", ""))
+            due_item = QTableWidgetItem(iso_to_display(issue.get("due_date", "")))
             due_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if bg_color:
                 due_item.setBackground(bg_color)
