@@ -1,4 +1,6 @@
 import httpx
+import subprocess
+import webbrowser
 
 from urllib.parse import urljoin
 
@@ -611,11 +613,42 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", f"No se pudo rechazar:\n{str(e)}")
 
     def _abrir_url_redmine(self, issue_id: int, url: str):
-        if url:
-            QDesktopServices.openUrl(QUrl(url))
-        elif self._settings.redmine_url:
-            base = self._settings.redmine_url.rstrip("/")
-            QDesktopServices.openUrl(QUrl(f"{base}/issues/{issue_id}"))
+        if not url:
+            if self._settings.redmine_url:
+                base = self._settings.redmine_url.rstrip("/")
+                url = f"{base}/issues/{issue_id}"
+            else:
+                return
+
+        # Método 1: probar navegadores directamente (evita xdg-open si falla Firefox)
+        for browser in ("google-chrome", "chromium-browser", "chromium", "firefox"):
+            try:
+                subprocess.Popen(
+                    [browser, url],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return
+            except FileNotFoundError:
+                continue
+
+        # Método 2: QDesktopServices (usa xdg-open)
+        if QDesktopServices.openUrl(QUrl(url)):
+            return
+
+        # Método 3: webbrowser (último intento programático)
+        if webbrowser.open(url):
+            return
+
+        # Fallback final: copiar al portapapeles y mostrar la URL
+        clipboard = QApplication.clipboard()
+        clipboard.setText(url)
+        QMessageBox.information(
+            self, "Abrir en Redmine",
+            f"No se pudo abrir el navegador.\n\n"
+            f"La URL se ha copiado al portapapeles:\n{url}"
+        )
 
     def _on_due_date_changed(self, issue_id: int, due_date: str):
         if not self._redmine:
