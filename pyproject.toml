@@ -1,6 +1,6 @@
 [project]
 name = "pyissuestracker"
-version = "0.3.0"
+version = "0.3.3"
 description = "Cliente de escritorio Redmine multiplataforma"
 requires-python = ">=3.9"
 dependencies = [
