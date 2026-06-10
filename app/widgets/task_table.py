@@ -61,6 +61,7 @@ class TaskTable(QTableWidget):
         self._statuses: list[tuple[int, str]] = []
         self._current_user_id: int = 0
         self._frequent_people_ids: list[int] = []
+        self._editing_row: int | None = None
         self._frequent_people_names: dict[int, str] = {}
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
@@ -87,32 +88,72 @@ class TaskTable(QTableWidget):
             date_edit.setCalendarPopup(True)
             date_edit.setDisplayFormat("dd/MM/yyyy")
             date_edit.installEventFilter(self)
+            self._editing_row = row
             self.setCellWidget(row, self.COL_DUE_DATE, date_edit)
-            date_edit.editingFinished.connect(lambda r=row, de=date_edit: self._on_due_date_edited(r, de))
             date_edit.setFocus()
             date_edit.show()
         else:
             self.tarea_doble_click.emit(self._issues[row]["id"])
 
     def eventFilter(self, obj, event):
-        """Cierra el QDateEdit inline al presionar Escape (cancela sin cambios)."""
-        if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
-            if isinstance(obj, QDateEdit):
-                for row in range(self.rowCount()):
-                    if self.cellWidget(row, self.COL_DUE_DATE) is obj:
-                        self.removeCellWidget(row, self.COL_DUE_DATE)
-                        old_due = self._issues[row].get("due_date", "")
-                        due_item = QTableWidgetItem(iso_to_display(old_due))
-                        due_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                        # Mantener colores de prioridad
-                        priority = self._issues[row].get("priority_name", "")
-                        bg_color = self._priority_bg(priority)
-                        if bg_color:
-                            due_item.setBackground(bg_color)
-                            due_item.setForeground(Qt.GlobalColor.white)
-                        self.setItem(row, self.COL_DUE_DATE, due_item)
-                        return True
+        """Maneja Escape (cancelar), Enter (confirmar) y pérdida de foco del QDateEdit inline."""
+        if isinstance(obj, QDateEdit):
+            if event.type() == QEvent.Type.KeyPress:
+                if event.key() == Qt.Key.Key_Escape:
+                    self._cancel_due_date_edit()
+                    return True
+                if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    self._commit_due_date_edit()
+                    return True
+            elif event.type() == QEvent.Type.FocusOut:
+                # Si el foco NO va al calendar popup (hijo del QDateEdit), hacer commit
+                new_focus = QApplication.focusWidget()
+                if new_focus is None or not self._is_descendant_of(obj, new_focus):
+                    # Pequeño delay para permitir que el popup tome el foco
+                    QApplication.instance().processEvents()
+                    new_focus = QApplication.focusWidget()
+                    if new_focus is None or not self._is_descendant_of(obj, new_focus):
+                        self._commit_due_date_edit()
         return super().eventFilter(obj, event)
+
+    @staticmethod
+    def _is_descendant_of(parent, child) -> bool:
+        """Comprueba si child es descendiente de parent en la jerarquía de widgets."""
+        w = child
+        while w is not None:
+            if w is parent:
+                return True
+            w = w.parent()
+        return False
+
+    def _commit_due_date_edit(self):
+        """Confirma la edición inline de fecha y cierra el editor."""
+        if self._editing_row is None:
+            return
+        row = self._editing_row
+        date_edit = self.cellWidget(row, self.COL_DUE_DATE)
+        if not isinstance(date_edit, QDateEdit):
+            self._editing_row = None
+            return
+        self._editing_row = None
+        self._on_due_date_edited(row, date_edit)
+
+    def _cancel_due_date_edit(self):
+        """Cancela la edición inline restaurando la fecha original."""
+        if self._editing_row is None:
+            return
+        row = self._editing_row
+        self._editing_row = None
+        self.removeCellWidget(row, self.COL_DUE_DATE)
+        old_due = self._issues[row].get("due_date", "")
+        due_item = QTableWidgetItem(iso_to_display(old_due))
+        due_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        priority = self._issues[row].get("priority_name", "")
+        bg_color = self._priority_bg(priority)
+        if bg_color:
+            due_item.setBackground(bg_color)
+            due_item.setForeground(Qt.GlobalColor.white)
+        self.setItem(row, self.COL_DUE_DATE, due_item)
 
     def _on_due_date_edited(self, row: int, date_edit: QDateEdit):
         if row >= len(self._issues):
