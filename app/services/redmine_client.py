@@ -122,6 +122,18 @@ class RedmineSSOError(RedmineError):
     pass
 
 
+class RedmineValidationError(RedmineError):
+    """Error de validación devuelto por la API de Redmine (HTTP 422).
+
+    Attributes:
+        errors: Lista de mensajes de error de validación devueltos por la API.
+    """
+
+    def __init__(self, message: str, errors: list[str] | None = None):
+        super().__init__(message)
+        self.errors = errors or []
+
+
 class RedmineClient:
     def __init__(self, base_url: str, api_key: str, proxy_url: str | None = None,
                  session_cookie: str = "", extra_headers: dict[str, str] | None = None):
@@ -134,6 +146,7 @@ class RedmineClient:
         self._session_cookie = session_cookie
         self._extra_headers = extra_headers or {}
         self._client: httpx.Client | None = None
+        self._cached_user_id: int | None = None
 
     def _build_client(self) -> httpx.Client:
         headers = {
@@ -158,6 +171,25 @@ class RedmineClient:
             self._client = self._build_client()
         return self._client
 
+    def _extract_validation_errors(self, resp) -> list[str]:
+        """Extrae mensajes de error de validación del JSON de respuesta (HTTP 422)."""
+        body = self._safe_json(resp)
+        if not body or not isinstance(body, dict):
+            return [f"Error HTTP {resp.status_code}"]
+        errors = body.get("errors", [])
+        if not errors:
+            return [f"Error HTTP {resp.status_code}"]
+        if isinstance(errors, list):
+            return [str(e) for e in errors]
+        return [str(errors)]
+
+    def _safe_json(self, resp) -> dict | None:
+        """Intenta parsear JSON de una respuesta, devolviendo None si falla."""
+        try:
+            return resp.json()
+        except Exception:
+            return None
+
     def _get(self, path: str, params: dict | None = None) -> dict:
         try:
             resp = self.client.get(path, params=params or {})
@@ -168,7 +200,14 @@ class RedmineClient:
                 raise RedmineAuthError("Acceso denegado (HTTP 403)")
             if resp.status_code == 404:
                 raise RedmineError(f"Recurso no encontrado: {path}")
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                body = self._safe_json(resp)
+                detail = ""
+                if body and isinstance(body, dict):
+                    errors = body.get("errors", [])
+                    if errors:
+                        detail = ": " + "; ".join(str(e) for e in errors)
+                raise RedmineError(f"Error HTTP {resp.status_code} en {path}{detail}")
             return resp.json()
         except httpx.ConnectError as e:
             raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
@@ -176,31 +215,62 @@ class RedmineClient:
             raise RedmineConnectionError("Timeout al conectar al servidor Redmine")
 
     def _post(self, path: str, data: dict) -> dict:
+        resp = None
         try:
             resp = self.client.post(path, json=data)
             self._check_redirect(resp, path)
             if resp.status_code == 401:
                 raise RedmineAuthError("API key no válida (HTTP 401)")
-            resp.raise_for_status()
-            return resp.json()
+            if resp.status_code == 422:
+                errors = self._extract_validation_errors(resp)
+                raise RedmineValidationError(
+                    f"Error de validación al crear/actualizar en {path}",
+                    errors,
+                )
+            if resp.status_code >= 400:
+                body = self._safe_json(resp)
+                detail = ""
+                if body and isinstance(body, dict):
+                    errors = body.get("errors", [])
+                    if errors:
+                        detail = ": " + "; ".join(str(e) for e in errors)
+                raise RedmineError(f"Error HTTP {resp.status_code} en {path}{detail}")
         except httpx.ConnectError as e:
             raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
         except httpx.TimeoutException:
             raise RedmineConnectionError("Timeout al conectar al servidor Redmine")
+        try:
+            return resp.json() if resp is not None else {}
+        except Exception:
+            return {}
 
     def _put(self, path: str, data: dict) -> dict:
+        resp = None
         try:
             resp = self.client.put(path, json=data)
             self._check_redirect(resp, path)
             if resp.status_code == 401:
                 raise RedmineAuthError("API key no válida (HTTP 401)")
-            resp.raise_for_status()
+            if resp.status_code == 422:
+                errors = self._extract_validation_errors(resp)
+                raise RedmineValidationError(
+                    f"Error de validación al actualizar en {path}",
+                    errors,
+                )
+            if resp.status_code >= 400:
+                body = self._safe_json(resp)
+                detail = ""
+                if body and isinstance(body, dict):
+                    errors = body.get("errors", [])
+                    if errors:
+                        detail = ": " + "; ".join(str(e) for e in errors)
+                raise RedmineError(f"Error HTTP {resp.status_code} en {path}{detail}")
         except httpx.ConnectError as e:
             raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
         except httpx.TimeoutException:
             raise RedmineConnectionError("Timeout al conectar al servidor Redmine")
         try:
-            return resp.json()
+            return resp.json() if resp is not None else {}
         except Exception:
             return {}
 
@@ -238,8 +308,14 @@ class RedmineClient:
 
     # ---- Proyectos ----
 
-    def get_projects(self) -> list[RedmineProject]:
-        raw = self._get("/projects.json", params={"limit": 200})
+    def get_projects(self, offset: int = 0, limit: int = 100) -> list[RedmineProject]:
+        """Obtiene una página de proyectos desde la API de Redmine.
+
+        Args:
+            offset: Desplazamiento para paginación.
+            limit: Número máximo de proyectos a obtener (máximo 100 por página).
+        """
+        raw = self._get("/projects.json", params={"limit": limit, "offset": offset})
         projects_list = raw.get("projects", [])
         projects: list[RedmineProject] = []
         for p in projects_list:
@@ -249,8 +325,28 @@ class RedmineClient:
                 identifier=p["identifier"],
                 parent_id=p.get("parent", {}).get("id") if p.get("parent") else None,
             ))
-        projects.sort(key=lambda x: x.name.lower())
         return projects
+
+    def get_all_projects(self, page_limit: int = 100) -> list[RedmineProject]:
+        """Obtiene todos los proyectos usando paginación.
+
+        Itera sobre las páginas de la API hasta recibir una lista vacía,
+        con un máximo de 20 páginas (2000 proyectos) como límite de seguridad.
+
+        Args:
+            page_limit: Número de proyectos por página.
+        """
+        all_projects: list[RedmineProject] = []
+        max_pages = 20
+        for page in range(max_pages):
+            offset = page * page_limit
+            projects = self.get_projects(offset=offset, limit=page_limit)
+            if not projects:
+                break
+            all_projects.extend(projects)
+        # Ordenar alfabéticamente
+        all_projects.sort(key=lambda x: x.name.lower())
+        return all_projects
 
     # ---- Trackers ----
 
@@ -388,6 +484,7 @@ class RedmineClient:
                      tracker_id: int = 1, priority_id: int = 2,
                      assigned_to_id: int | None = None,
                      category_id: int = 0, start_date: str = "",
+                     due_date: str = "",
                      done_ratio: int = 0,
                      uploads: list[dict] | None = None) -> dict:
         payload: dict[str, Any] = {
@@ -403,6 +500,8 @@ class RedmineClient:
             payload["category_id"] = category_id
         if start_date:
             payload["start_date"] = start_date
+        if due_date:
+            payload["due_date"] = due_date
         if done_ratio:
             payload["done_ratio"] = done_ratio
         if uploads:
@@ -519,8 +618,12 @@ class RedmineClient:
         return memberships
 
     def get_current_user_id(self) -> int:
+        """Obtiene el ID del usuario actual, cacheando el resultado."""
+        if self._cached_user_id is not None:
+            return self._cached_user_id
         data = self._get("/users/current.json")
-        return data["user"]["id"]
+        self._cached_user_id = data["user"]["id"]
+        return self._cached_user_id
 
     def upload_file(self, file_path: str) -> dict:
         """Sube un archivo a Redmine mediante POST /uploads.json.

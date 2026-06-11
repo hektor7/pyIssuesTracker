@@ -15,7 +15,7 @@ from app import __version__
 from app.services.settings_manager import SettingsManager
 from app.services.redmine_client import (
     RedmineClient, RedmineError, RedmineAuthError, RedmineConnectionError,
-    RedmineSSOError,
+    RedmineSSOError, RedmineValidationError,
 )
 from app.services.update_manager import UpdateManager
 from app.widgets.status_indicator import StatusIndicator
@@ -287,7 +287,7 @@ class MainWindow(QMainWindow):
         if not self._redmine:
             return
         try:
-            projects = self._redmine.get_projects()
+            projects = self._redmine.get_all_projects()
             self._projects = [(p.id, p.name) for p in projects]
             self._project_hierarchy = {p.id: p.parent_id for p in projects}
             self._filter_bar.populate_projects(self._projects, self._project_hierarchy)
@@ -456,6 +456,7 @@ class MainWindow(QMainWindow):
             redmine_client=self._redmine,
             default_project_id=default_project_id,
             members=members,
+            current_user_id=self._current_user_id,
         )
         if dlg.exec() == TaskDialog.DialogCode.Accepted:
             try:
@@ -473,8 +474,17 @@ class MainWindow(QMainWindow):
                     uploads=dlg.upload_tokens or None,
                 )
                 self._cargar_issues()
+            except RedmineValidationError as e:
+                errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
+                QMessageBox.critical(self, "Error de validación",
+                                     f"Redmine rechazó la tarea:\n{errors_text}")
+            except RedmineConnectionError as e:
+                QMessageBox.critical(self, "Error de conexión", str(e))
             except RedmineError as e:
                 QMessageBox.critical(self, "Error", f"No se pudo crear la tarea:\n{str(e)}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error inesperado",
+                                     f"Ocurrió un error inesperado al crear la tarea:\n{str(e)}")
 
     def _editar_tarea_seleccionada(self):
         issue_id = self._task_table.get_selected_issue_id()
@@ -530,6 +540,7 @@ class MainWindow(QMainWindow):
                 redmine_client=self._redmine,
                 task_data=task_data,
                 members=members,
+                current_user_id=self._current_user_id,
             )
             if dlg.exec() == TaskDialog.DialogCode.Accepted:
                 self._redmine.update_issue(
@@ -540,14 +551,24 @@ class MainWindow(QMainWindow):
                     tracker_id=dlg.tracker_id,
                     priority_id=dlg.priority_id,
                     category_id=dlg.category_id,
+                    assigned_to_id=dlg.assigned_to_id or None,
                     start_date=dlg.start_date,
                     due_date=dlg.due_date if dlg.due_enabled else "",
                     done_ratio=dlg.done_ratio,
                     status_id=dlg.status_id if dlg.status_id else None,
                 )
                 self._cargar_issues()
+        except RedmineValidationError as e:
+            errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
+            QMessageBox.critical(self, "Error de validación",
+                                 f"Redmine rechazó la actualización:\n{errors_text}")
+        except RedmineConnectionError as e:
+            QMessageBox.critical(self, "Error de conexión", str(e))
         except RedmineError as e:
             QMessageBox.critical(self, "Error", f"No se pudo editar la tarea:\n{str(e)}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error inesperado",
+                                 f"Ocurrió un error inesperado al editar la tarea:\n{str(e)}")
 
     def _asignar_tarea(self):
         issue_id = self._task_table.get_selected_issue_id()

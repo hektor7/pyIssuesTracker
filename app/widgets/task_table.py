@@ -18,15 +18,16 @@ class TaskTable(QTableWidget):
     due_date_cambiada = pyqtSignal(int, str)  # issue_id, due_date
 
     COL_ID = 0
-    COL_TITLE = 1
-    COL_START_DATE = 2
-    COL_DUE_DATE = 3
-    COL_STATUS = 4
-    COL_ASSIGNED_TO = 5
-    COL_PROGRESS = 6
-    COL_URL = 7
+    COL_TRACKER = 1
+    COL_TITLE = 2
+    COL_START_DATE = 3
+    COL_DUE_DATE = 4
+    COL_STATUS = 5
+    COL_ASSIGNED_TO = 6
+    COL_PROGRESS = 7
+    COL_URL = 8
 
-    HEADERS = ["ID", "Título", "Fecha inicio", "Fecha fin", "Estado", "Asignado a", "Progreso %", ""]
+    HEADERS = ["ID", "Tracker", "Título", "Fecha inicio", "Fecha fin", "Estado", "Asignado a", "Progreso %", ""]
 
     _BG_INMEDIATA = QColor(200, 0, 0)
     _BG_URGENTE = QColor(180, 20, 20)
@@ -47,6 +48,7 @@ class TaskTable(QTableWidget):
         header = self.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(self.COL_ID, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self.COL_TRACKER, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(self.COL_START_DATE, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_DUE_DATE, QHeaderView.ResizeMode.ResizeToContents)
@@ -381,6 +383,13 @@ class TaskTable(QTableWidget):
                 id_item.setBackground(bg_color)
                 id_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_ID, id_item)
+
+            tracker_item = QTableWidgetItem(issue.get("tracker_name", ""))
+            tracker_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if bg_color:
+                tracker_item.setBackground(bg_color)
+                tracker_item.setForeground(Qt.GlobalColor.white)
+            self.setItem(row, self.COL_TRACKER, tracker_item)
 
             title_item = QTableWidgetItem(issue.get("subject", ""))
             title_item.setToolTip(

@@ -24,7 +24,8 @@ class TaskDialog(QDialog):
                  redmine_client: RedmineClient | None = None,
                  task_data: dict | None = None,
                  default_project_id: int = 0,
-                 members: list[tuple[int, str]] | None = None):
+                 members: list[tuple[int, str]] | None = None,
+                 current_user_id: int = 0):
         super().__init__(parent)
         self._projects = projects or []
         self._trackers = trackers or []
@@ -36,6 +37,7 @@ class TaskDialog(QDialog):
         self._is_edit = bool(task_data)
         self._default_project_id = default_project_id or 0
         self._members = members or []
+        self._current_user_id = current_user_id
         self._pending_files: list[str] = []
         self._upload_tokens: list[dict] = []
 
@@ -96,6 +98,7 @@ class TaskDialog(QDialog):
         for tid, tname in self._trackers:
             self._tracker_combo.addItem(tname, tid)
         self._update_completer_model(self._tracker_combo)
+        self._tracker_combo.setEnabled(True)  # Asegurar editable en ambos modos
         basic_form.addRow("Tracker:", self._tracker_combo)
 
         # Asunto
@@ -406,7 +409,24 @@ class TaskDialog(QDialog):
         self._assigned_combo.clear()
         self._assigned_combo.addItem("(Sin asignar)", 0)
         names = ["(Sin asignar)"]
+
+        # Ordenar miembros: usuario actual primero, resto alfabéticamente
+        current_user = None
+        other_members: list[tuple[int, str]] = []
         for mid, mname in members:
+            if mid == self._current_user_id and self._current_user_id:
+                current_user = (mid, mname)
+            else:
+                other_members.append((mid, mname))
+        # Ordenar el resto alfabéticamente
+        other_members.sort(key=lambda x: x[1].lower())
+
+        # Añadir usuario actual primero si es miembro
+        if current_user:
+            self._assigned_combo.addItem(current_user[1], current_user[0])
+            names.append(current_user[1])
+
+        for mid, mname in other_members:
             self._assigned_combo.addItem(mname, mid)
             names.append(mname)
         self._update_completer_model(self._assigned_combo)
