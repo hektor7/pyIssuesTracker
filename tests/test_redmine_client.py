@@ -2,7 +2,10 @@ from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
 
-from app.services.redmine_client import RedmineClient, RedmineAttachment, RedmineIssue
+from app.services.redmine_client import (
+    RedmineClient, RedmineAttachment, RedmineIssue,
+    RedmineValidationError, RedmineError, RedmineProject,
+)
 
 
 @pytest.fixture
@@ -52,6 +55,14 @@ class TestCompleteIssue:
         client._put.assert_called_once_with(
             "/issues/42.json",
             {"issue": {"done_ratio": 100, "notes": "completed"}},
+        )
+
+    def test_complete_issue_with_due_date(self, client):
+        """complete_issue con due_date debe pasar el campo due_date."""
+        client.complete_issue(issue_id=42, done_ratio=100, status_id=5, due_date="2026-06-12")
+        client._put.assert_called_once_with(
+            "/issues/42.json",
+            {"issue": {"done_ratio": 100, "status_id": 5, "due_date": "2026-06-12"}},
         )
 
 
@@ -128,3 +139,272 @@ class TestDownloadAttachment:
         handle = mock_open_file()
         handle.write.assert_any_call(b"chunk1")
         handle.write.assert_any_call(b"chunk2")
+
+
+# ================================================================
+# Tests para RedmineValidationError
+# ================================================================
+
+
+class TestRedmineValidationError:
+    """Tests para la clase de excepción RedmineValidationError."""
+
+    def test_validation_error_has_errors_list(self):
+        """RedmineValidationError debe almacenar lista de errores."""
+        err = RedmineValidationError("msg", ["error1", "error2"])
+        assert err.errors == ["error1", "error2"]
+        assert str(err) == "msg"
+
+    def test_validation_error_default_empty_errors(self):
+        """Sin errors, debe tener lista vacía."""
+        err = RedmineValidationError("msg")
+        assert err.errors == []
+
+    def test_validation_error_is_redmine_error(self):
+        """RedmineValidationError debe heredar de RedmineError."""
+        err = RedmineValidationError("msg")
+        assert isinstance(err, RedmineError)
+
+
+class TestExtractValidationErrors:
+    """Tests para _extract_validation_errors()."""
+
+    @pytest.fixture
+    def client(self):
+        return RedmineClient("https://redmine.example.com", "token")
+
+    def test_extracts_errors_from_json(self, client):
+        """Extrae lista de errores del JSON de respuesta."""
+        resp = MagicMock()
+        resp.status_code = 422
+        resp.json.return_value = {"errors": ["Asunto no puede estar vacío", "Proyecto es obligatorio"]}
+        errors = client._extract_validation_errors(resp)
+        assert errors == ["Asunto no puede estar vacío", "Proyecto es obligatorio"]
+
+    def test_returns_generic_message_when_no_json(self, client):
+        """Si no hay JSON válido, devuelve mensaje genérico."""
+        resp = MagicMock()
+        resp.status_code = 422
+        resp.json.side_effect = Exception("no json")
+        errors = client._extract_validation_errors(resp)
+        assert errors == ["Error HTTP 422"]
+
+    def test_returns_generic_message_when_no_errors_key(self, client):
+        """Si el JSON no tiene clave 'errors', devuelve mensaje genérico."""
+        resp = MagicMock()
+        resp.status_code = 422
+        resp.json.return_value = {"message": "something wrong"}
+        errors = client._extract_validation_errors(resp)
+        assert errors == ["Error HTTP 422"]
+
+    def test_handles_errors_as_string(self, client):
+        """Si errors es un string en vez de lista, lo envuelve."""
+        resp = MagicMock()
+        resp.status_code = 422
+        resp.json.return_value = {"errors": "single error message"}
+        errors = client._extract_validation_errors(resp)
+        assert errors == ["single error message"]
+
+
+class TestPostValidationErrors:
+    """Tests para _post() con HTTP 422."""
+
+    @pytest.fixture
+    def client(self):
+        c = RedmineClient("https://redmine.example.com", "token")
+        return c
+
+    def test_post_raises_validation_error_on_422(self, client):
+        """_post() debe lanzar RedmineValidationError en HTTP 422."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 422
+        mock_resp.json.return_value = {"errors": ["Subject is required"]}
+
+        mock_http_client = MagicMock()
+        mock_http_client.post.return_value = mock_resp
+
+        with patch.object(client, "_build_client", return_value=mock_http_client):
+            client._client = mock_http_client  # Forzar uso del mock
+            with pytest.raises(RedmineValidationError) as exc_info:
+                client._post("/issues.json", {"issue": {}})
+            assert exc_info.value.errors == ["Subject is required"]
+
+    def test_post_raises_auth_error_on_401(self, client):
+        """_post() debe lanzar RedmineAuthError en HTTP 401."""
+        from app.services.redmine_client import RedmineAuthError
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+
+        mock_http_client = MagicMock()
+        mock_http_client.post.return_value = mock_resp
+
+        with patch.object(client, "_build_client", return_value=mock_http_client):
+            client._client = mock_http_client
+            with pytest.raises(RedmineAuthError):
+                client._post("/issues.json", {"issue": {}})
+
+
+class TestPutValidationErrors:
+    """Tests para _put() con HTTP 422."""
+
+    @pytest.fixture
+    def client(self):
+        return RedmineClient("https://redmine.example.com", "token")
+
+    def test_put_raises_validation_error_on_422(self, client):
+        """_put() debe lanzar RedmineValidationError en HTTP 422."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 422
+        mock_resp.json.return_value = {"errors": ["Status is invalid"]}
+
+        mock_http_client = MagicMock()
+        mock_http_client.put.return_value = mock_resp
+
+        with patch.object(client, "_build_client", return_value=mock_http_client):
+            client._client = mock_http_client
+            with pytest.raises(RedmineValidationError) as exc_info:
+                client._put("/issues/1.json", {"issue": {}})
+            assert exc_info.value.errors == ["Status is invalid"]
+
+
+class TestGetErrorHandling:
+    """Tests para _get() con errores HTTP."""
+
+    @pytest.fixture
+    def client(self):
+        return RedmineClient("https://redmine.example.com", "token")
+
+    def test_get_includes_error_body_in_message(self, client):
+        """_get() debe incluir errores del JSON en el mensaje de error."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.json.return_value = {"errors": ["Internal server error"]}
+
+        mock_http_client = MagicMock()
+        mock_http_client.get.return_value = mock_resp
+
+        with patch.object(client, "_build_client", return_value=mock_http_client):
+            client._client = mock_http_client
+            with pytest.raises(RedmineError) as exc_info:
+                client._get("/issues.json")
+            assert "Internal server error" in str(exc_info.value)
+
+    def test_get_raises_on_404(self, client):
+        """_get() debe lanzar RedmineError en HTTP 404."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+
+        mock_http_client = MagicMock()
+        mock_http_client.get.return_value = mock_resp
+
+        with patch.object(client, "_build_client", return_value=mock_http_client):
+            client._client = mock_http_client
+            with pytest.raises(RedmineError, match="Recurso no encontrado"):
+                client._get("/issues/999.json")
+
+
+class TestGetProjects:
+    """Tests para get_projects() con paginación."""
+
+    @pytest.fixture
+    def client(self):
+        c = RedmineClient("https://redmine.example.com", "token")
+        c._get = MagicMock()
+        return c
+
+    def test_get_projects_passes_offset_and_limit(self, client):
+        """get_projects() debe pasar offset y limit como parámetros."""
+        client._get.return_value = {"projects": []}
+        client.get_projects(offset=50, limit=25)
+        client._get.assert_called_once_with("/projects.json", params={"limit": 25, "offset": 50})
+
+    def test_get_projects_parses_response(self, client):
+        """get_projects() debe parsear la respuesta en RedmineProject."""
+        client._get.return_value = {
+            "projects": [
+                {"id": 1, "name": "Project A", "identifier": "proj-a"},
+                {"id": 2, "name": "Project B", "identifier": "proj-b", "parent": {"id": 1}},
+            ]
+        }
+        projects = client.get_projects()
+        assert len(projects) == 2
+        assert projects[0].id == 1
+        assert projects[0].name == "Project A"
+        assert projects[0].parent_id is None
+        assert projects[1].parent_id == 1
+
+
+class TestGetAllProjects:
+    """Tests para get_all_projects()."""
+
+    @pytest.fixture
+    def client(self):
+        c = RedmineClient("https://redmine.example.com", "token")
+        return c
+
+    def test_get_all_projects_single_page(self, client):
+        """Con menos de 100 proyectos, debe hacer una sola llamada."""
+        projects = [RedmineProject(id=i, name=f"P{i}", identifier=f"p{i}", parent_id=None) for i in range(5)]
+
+        with patch.object(client, "get_projects", side_effect=[projects, []]) as mock_get:
+            result = client.get_all_projects()
+            assert len(result) == 5
+            assert mock_get.call_count == 2  # Primera llamada + segunda vacía
+
+    def test_get_all_projects_multiple_pages(self, client):
+        """Con múltiples páginas, debe iterar hasta recibir lista vacía."""
+        page1 = [RedmineProject(id=i, name=f"P{i}", identifier=f"p{i}", parent_id=None) for i in range(100)]
+        page2 = [RedmineProject(id=i, name=f"P{i}", identifier=f"p{i}", parent_id=None) for i in range(100, 150)]
+
+        with patch.object(client, "get_projects", side_effect=[page1, page2, []]) as mock_get:
+            result = client.get_all_projects()
+            assert len(result) == 150
+            assert mock_get.call_count == 3
+
+    def test_get_all_projects_sorts_alphabetically(self, client):
+        """Los proyectos deben ordenarse alfabéticamente."""
+        projects = [
+            RedmineProject(id=1, name="Zebra", identifier="z", parent_id=None),
+            RedmineProject(id=2, name="Alpha", identifier="a", parent_id=None),
+            RedmineProject(id=3, name="Middle", identifier="m", parent_id=None),
+        ]
+
+        with patch.object(client, "get_projects", side_effect=[projects, []]):
+            result = client.get_all_projects()
+            assert [p.name for p in result] == ["Alpha", "Middle", "Zebra"]
+
+    def test_get_all_projects_respects_max_pages(self, client):
+        """No debe exceder 20 páginas (límite de seguridad)."""
+        page = [RedmineProject(id=i, name=f"P{i}", identifier=f"p{i}", parent_id=None) for i in range(100)]
+
+        # Siempre devuelve 100 proyectos (nunca lista vacía)
+        with patch.object(client, "get_projects", return_value=page) as mock_get:
+            result = client.get_all_projects()
+            assert mock_get.call_count == 20  # Máximo 20 páginas
+            assert len(result) == 2000  # 20 * 100
+
+
+class TestGetCurrentUserId:
+    """Tests para get_current_user_id()."""
+
+    @pytest.fixture
+    def client(self):
+        c = RedmineClient("https://redmine.example.com", "token")
+        return c
+
+    def test_get_current_user_id_fetches_from_api(self, client):
+        """Primera llamada debe obtener el ID de la API."""
+        client._get = MagicMock(return_value={"user": {"id": 42}})
+        result = client.get_current_user_id()
+        assert result == 42
+        client._get.assert_called_once_with("/users/current.json")
+
+    def test_get_current_user_id_uses_cache(self, client):
+        """Segunda llamada debe usar caché sin llamar a la API."""
+        client._get = MagicMock(return_value={"user": {"id": 42}})
+        client.get_current_user_id()  # Primera llamada
+        client._get.reset_mock()
+
+        result = client.get_current_user_id()  # Segunda llamada
+        assert result == 42
+        client._get.assert_not_called()  # No debe llamar a la API

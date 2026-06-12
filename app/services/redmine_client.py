@@ -466,7 +466,7 @@ class RedmineClient:
             if j.get("notes"):  # Solo journals con notas (ignorar cambios de atributos)
                 journals.append(RedmineJournal(
                     id=j["id"],
-                    user_name=j.get("user", {}).get("name", "Desconocido"),
+                    user_name=(j.get("user") or {}).get("name", "Desconocido"),
                     notes=j.get("notes", ""),
                     created_on=j.get("created_on", ""),
                 ))
@@ -518,12 +518,15 @@ class RedmineClient:
         return self.update_issue(issue_id, **fields)
 
     def complete_issue(self, issue_id: int, done_ratio: int = 100,
-                       status_id: int | None = None, notes: str = "") -> dict:
+                       status_id: int | None = None, notes: str = "",
+                       due_date: str = "") -> dict:
         fields: dict[str, Any] = {"done_ratio": done_ratio}
         if status_id:
             fields["status_id"] = status_id
         if notes:
             fields["notes"] = notes
+        if due_date:
+            fields["due_date"] = due_date
         return self.update_issue(issue_id, **fields)
 
     def reject_issue(self, issue_id: int, status_id: int, notes: str = "") -> dict:

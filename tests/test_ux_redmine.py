@@ -314,7 +314,7 @@ class TestTaskTableDueDateColumn:
     def test_task_table_has_due_date_column(self, qapp):
         """TaskTable debe tener COL_DUE_DATE y cabecera 'Fecha fin'."""
         table = TaskTable()
-        assert table.COL_DUE_DATE == 3
+        assert table.COL_DUE_DATE == 4
         assert table.HEADERS[table.COL_DUE_DATE] == "Fecha fin"
 
     def test_due_date_column_shows_data(self, qapp):
@@ -330,7 +330,7 @@ class TestTaskTableDueDateColumn:
         table.set_issues(issues)
         item = table.item(0, table.COL_DUE_DATE)
         assert item is not None
-        assert item.text() == "2026-06-15"
+        assert item.text() == "15/06/2026"
 
     def test_due_date_column_empty_when_no_date(self, qapp):
         """Sin due_date, la celda debe estar vacía."""

@@ -15,6 +15,8 @@ class CommentsWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._completer = None
+        self._text_changed_handler = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -68,9 +70,11 @@ class CommentsWidget(QWidget):
     def _journal_get(j, key: str, default: str = ""):
         """Obtiene un valor de un journal, ya sea objeto RedmineJournal o diccionario."""
         if hasattr(j, key):
-            return getattr(j, key, default)
+            value = getattr(j, key, default)
+            return value if value is not None else default
         elif hasattr(j, "get"):
-            return j.get(key, default)
+            value = j.get(key, default)
+            return value if value is not None else default
         return default
 
     def set_comments(self, journals: list):
@@ -126,7 +130,53 @@ class CommentsWidget(QWidget):
     def set_members(self, members: list[tuple[int, str]]):
         """Configura el autocompletado @usuario con los miembros del proyecto."""
         names = [name for _, name in members]
-        setup_mention_completer(self._note_edit, names)
+
+        # Desconectar handler anterior si existe
+        if self._text_changed_handler is not None:
+            try:
+                self._note_edit.textChanged.disconnect(self._text_changed_handler)
+            except (TypeError, RuntimeError):
+                pass
+            self._text_changed_handler = None
+
+        # Destruir completer anterior
+        if self._completer is not None:
+            self._completer.deleteLater()
+            self._completer = None
+
+        if not names:
+            return
+
+        self._completer = QCompleter(names, self._note_edit)
+        self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self._completer.setMaxVisibleItems(5)
+
+        def on_text_changed():
+            if self._completer is None:
+                return
+            try:
+                cursor = self._note_edit.textCursor()
+                text = self._note_edit.toPlainText()
+                pos = cursor.position()
+                at_pos = text.rfind('@', 0, pos)
+                if at_pos >= 0:
+                    after_at = text[at_pos:pos]
+                    if ' ' not in after_at and '\n' not in after_at:
+                        prefix = after_at[1:] if len(after_at) > 1 else ""
+                        self._completer.setCompletionPrefix(prefix)
+                        if self._completer.completionCount() > 0:
+                            self._completer.complete()
+                        return
+                popup = self._completer.popup() if self._completer else None
+                if popup:
+                    popup.hide()
+            except RuntimeError:
+                pass  # Widget destruido
+
+        self._text_changed_handler = on_text_changed
+        self._note_edit.textChanged.connect(on_text_changed)
 
     def clear(self):
         """Limpia todos los comentarios y el campo de nueva nota."""

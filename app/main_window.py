@@ -1,6 +1,7 @@
 import httpx
 import subprocess
 import webbrowser
+from datetime import date
 
 from urllib.parse import urljoin
 
@@ -610,7 +611,13 @@ class MainWindow(QMainWindow):
 
         try:
             resolved_status = next((sid for sid, sname in self._statuses if sname.lower() in ("resuelta", "resolved")), None)
-            self._redmine.complete_issue(issue_id, done_ratio=100, status_id=resolved_status, notes=dlg.notes)
+            self._redmine.complete_issue(
+                issue_id,
+                done_ratio=100,
+                status_id=resolved_status,
+                notes=dlg.notes,
+                due_date=date.today().isoformat(),
+            )
             self._cargar_issues()
             self._tray.notify(APP_DISPLAY_NAME, f"Tarea #{issue_id} completada")
         except RedmineError as e:
