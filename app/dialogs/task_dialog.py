@@ -115,7 +115,7 @@ class TaskDialog(QDialog):
         if self._members:
             from app.widgets.comments_widget import setup_mention_completer
             names = [name for _, name in self._members]
-            setup_mention_completer(self._description_edit, names)
+            self._description_completer = setup_mention_completer(self._description_edit, names)
 
         scroll_layout.addWidget(basic_group)
 

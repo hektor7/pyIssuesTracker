@@ -148,6 +148,7 @@ class CommentsWidget(QWidget):
             return
 
         self._completer = QCompleter(names, self._note_edit)
+        self._completer.setWidget(self._note_edit)
         self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self._completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
@@ -190,28 +191,34 @@ def setup_mention_completer(text_edit: QPlainTextEdit, names: list[str]):
     El completer se activa cuando el usuario escribe '@' seguido de texto sin espacios.
     """
     completer = QCompleter(names, text_edit)
+    completer.setWidget(text_edit)
     completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
     completer.setFilterMode(Qt.MatchFlag.MatchContains)
     completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
     completer.setMaxVisibleItems(5)
 
     def on_text_changed():
-        cursor = text_edit.textCursor()
-        text = text_edit.toPlainText()
-        pos = cursor.position()
-        # Buscar la última '@' antes del cursor
-        at_pos = text.rfind('@', 0, pos)
-        if at_pos >= 0:
-            after_at = text[at_pos:pos]
-            # Solo activar si no hay espacio después de @ (es una mención en curso)
-            if ' ' not in after_at and '\n' not in after_at:
-                # Eliminar el @ del prefijo para que coincida con los nombres
-                prefix = after_at[1:] if len(after_at) > 1 else ""
-                completer.setCompletionPrefix(prefix)
-                if completer.completionCount() > 0:
-                    completer.complete()
-                return
-        completer.popup().hide()
+        try:
+            cursor = text_edit.textCursor()
+            text = text_edit.toPlainText()
+            pos = cursor.position()
+            # Buscar la última '@' antes del cursor
+            at_pos = text.rfind('@', 0, pos)
+            if at_pos >= 0:
+                after_at = text[at_pos:pos]
+                # Solo activar si no hay espacio después de @ (es una mención en curso)
+                if ' ' not in after_at and '\n' not in after_at:
+                    # Eliminar el @ del prefijo para que coincida con los nombres
+                    prefix = after_at[1:] if len(after_at) > 1 else ""
+                    completer.setCompletionPrefix(prefix)
+                    if completer.completionCount() > 0:
+                        completer.complete()
+                    return
+            popup = completer.popup()
+            if popup:
+                popup.hide()
+        except RuntimeError:
+            pass  # Widget destruido
 
     text_edit.textChanged.connect(on_text_changed)
     return completer
