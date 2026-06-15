@@ -58,3 +58,26 @@ class TestPopulateMembers:
         assert dlg._assigned_combo.itemText(1) == "Alice"
         assert dlg._assigned_combo.itemText(2) == "Bob"
         assert dlg._assigned_combo.itemText(3) == "Charlie"
+
+    def test_populate_fields_precarga_assigned_to_id(self, qapp):
+        """_populate_fields debe preseleccionar assigned_to_id del task_data."""
+        task_data = {
+            "assigned_to_id": 5,
+            "subject": "Test",
+            "description": "",
+            "project_id": 1,
+            "tracker_id": 1,
+            "priority_id": 2,
+            "category_id": 0,
+            "start_date": "",
+            "due_date": "",
+            "done_ratio": 0,
+            "status_id": 1,
+        }
+        members = [(5, "Juan"), (7, "Maria")]
+        dlg = TaskDialog(
+            task_data=task_data,
+            members=members,
+        )
+        # _populate_fields se llama desde __init__, así que ya debe estar seleccionado
+        assert dlg._assigned_combo.currentData() == 5

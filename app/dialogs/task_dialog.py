@@ -353,6 +353,11 @@ class TaskDialog(QDialog):
         self._progress_slider.blockSignals(False)
         self._progress_spin.blockSignals(False)
 
+        # Asignado a
+        assigned_id = self._task_data.get("assigned_to_id", 0)
+        if assigned_id:
+            self._set_combo_data(self._assigned_combo, assigned_id)
+
         # Cargar categorías del proyecto
         if self._redmine and pid:
             self._load_categories_for_project(pid)

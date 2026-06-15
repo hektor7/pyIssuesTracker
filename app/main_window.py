@@ -508,7 +508,9 @@ class MainWindow(QMainWindow):
                 "tracker_id": data.get("tracker", {}).get("id", 1),
                 "priority_id": data.get("priority", {}).get("id", 2),
                 "category_id": data.get("category_id", 0),
+                "assigned_to_id": data.get("assigned_to", {}).get("id", 0) if data.get("assigned_to") else 0,
                 "start_date": data.get("start_date", ""),
+                "due_date": data.get("due_date", ""),
                 "done_ratio": data.get("done_ratio", 0),
                 "status_id": data.get("status", {}).get("id", 0),
                 "journals": data.get("_journals", []),
@@ -610,16 +612,35 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            # Obtener datos del issue para verificar si tiene due_date
+            issue_data = self._task_table.get_selected_row_data()
+            has_due_date = bool(issue_data.get("due_date", "")) if issue_data else False
+
             resolved_status = next((sid for sid, sname in self._statuses if sname.lower() in ("resuelta", "resolved")), None)
+            if resolved_status is None:
+                QMessageBox.warning(self, "No se puede completar",
+                                    "No se encontró un estado 'Resuelta' o 'Resolved' entre los estados "
+                                    "disponibles. La tarea no se puede completar.\n\n"
+                                    "Contacte con el administrador de Redmine.")
+                return
+
             self._redmine.complete_issue(
                 issue_id,
                 done_ratio=100,
                 status_id=resolved_status,
                 notes=dlg.notes,
-                due_date=date.today().isoformat(),
+                due_date=date.today().isoformat() if has_due_date else "",
             )
             self._cargar_issues()
             self._tray.notify(APP_DISPLAY_NAME, f"Tarea #{issue_id} completada")
+        except RedmineValidationError as e:
+            errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
+            QMessageBox.warning(self, "Error al completar",
+                                f"Redmine rechazó la operación. Causas posibles:\n"
+                                f"  • El estado 'Resuelta' no es válido para el tracker de esta tarea\n"
+                                f"  • La tarea no permite transición directa a completada\n"
+                                f"  • La fecha de fin no es válida\n\n"
+                                f"Detalle del servidor:\n{errors_text}")
         except RedmineError as e:
             QMessageBox.critical(self, "Error", f"No se pudo completar:\n{str(e)}")
 
@@ -858,6 +879,12 @@ class MainWindow(QMainWindow):
             try:
                 self._redmine.update_issue(issue_id, status_id=valor)
                 self._cargar_issues()
+            except RedmineValidationError as e:
+                errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
+                QMessageBox.warning(self, "Cambio no permitido",
+                                    f"Redmine rechazó el cambio de estado. Esto suele ocurrir porque "
+                                    f"el estado seleccionado no está permitido en el workflow de esta tarea.\n\n"
+                                    f"Detalle:\n{errors_text}")
             except RedmineError as e:
                 QMessageBox.critical(self, "Error", f"No se pudo cambiar el estado:\n{str(e)}")
 

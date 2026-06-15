@@ -144,6 +144,62 @@ class TestCompletarTareaDueDate:
         assert call_kwargs["due_date"] == date.today().isoformat()
 
 
+class TestCompletarTareaSinDueDate:
+    """_completar_tarea debe omitir due_date si el issue no tiene due_date."""
+
+    def test_completar_tarea_sin_due_date_no_incluye_due_date(self, main_window):
+        """_completar_tarea debe pasar due_date='' si el issue no tiene due_date."""
+        main_window._task_table.get_selected_issue_id.return_value = 42
+        main_window._task_table.get_selected_row_data.return_value = {}  # Sin due_date
+
+        dlg = MagicMock(spec=CompleteDialog)
+        dlg.notes = ""
+        dlg.exec.return_value = QDialog.DialogCode.Accepted
+
+        mock_class = MagicMock(spec=CompleteDialog)
+        mock_class.DialogCode = QDialog.DialogCode
+        mock_class.return_value = dlg
+
+        with patch("app.main_window.CompleteDialog", mock_class):
+            main_window._completar_tarea()
+
+        main_window._redmine.complete_issue.assert_called_once()
+        call_kwargs = main_window._redmine.complete_issue.call_args.kwargs
+        assert call_kwargs["due_date"] == ""
+
+
+class TestCompletarTareaResolvedStatus:
+    """_completar_tarea debe manejar cuando resolved_status es None."""
+
+    def test_completar_tarea_resolved_status_none_muestra_advertencia(self, main_window):
+        """_completar_tarea debe mostrar advertencia si resolved_status es None."""
+        # Sobrescribir _statuses para que NO incluya "Resuelta"/"Resolved"
+        main_window._statuses = [(1, "Nueva"), (3, "En progreso")]
+        main_window._task_table.get_selected_issue_id.return_value = 42
+
+        dlg = MagicMock(spec=CompleteDialog)
+        dlg.notes = ""
+        dlg.exec.return_value = QDialog.DialogCode.Accepted
+
+        mock_class = MagicMock(spec=CompleteDialog)
+        mock_class.DialogCode = QDialog.DialogCode
+        mock_class.return_value = dlg
+
+        with (
+            patch("app.main_window.CompleteDialog", mock_class),
+            patch("app.main_window.QMessageBox") as mock_msgbox,
+        ):
+            main_window._completar_tarea()
+
+        # Debe mostrar advertencia
+        mock_msgbox.warning.assert_called_once()
+        call_args = mock_msgbox.warning.call_args
+        assert "No se puede completar" in call_args[0][1]
+
+        # NO debe llamar a complete_issue
+        main_window._redmine.complete_issue.assert_not_called()
+
+
 # ================================================================
 # Tests para manejo de RedmineValidationError en nueva/editar tarea
 # ================================================================
@@ -280,3 +336,69 @@ class TestEditarTareaValidationErrors:
             call_args = mock_msgbox.critical.call_args
             assert "Error de validación" in call_args[0][1]
             assert "Estado no válido" in call_args[0][2]
+
+    def test_editar_tarea_incluye_assigned_to_id(self, main_window):
+        """_editar_tarea debe incluir assigned_to_id en task_data
+        cuando el issue tiene assigned_to en la respuesta de la API."""
+        main_window._redmine.get_issue_with_journals.return_value = {
+            "id": 42,
+            "subject": "Test",
+            "description": "",
+            "project": {"id": 1},
+            "tracker": {"id": 1},
+            "priority": {"id": 2},
+            "category_id": 0,
+            "assigned_to": {"id": 5, "name": "Juan"},
+            "start_date": "",
+            "due_date": "",
+            "done_ratio": 0,
+            "status": {"id": 1},
+            "_journals": [],
+            "_attachments": [],
+        }
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+
+        mock_dlg = MagicMock()
+        mock_dlg.exec.return_value = QDialog.DialogCode.Accepted
+
+        with patch("app.main_window.TaskDialog", return_value=mock_dlg) as mock_td:
+            mock_td.DialogCode = QDialog.DialogCode
+            main_window._editar_tarea(42)
+
+        mock_td.assert_called_once()
+        task_data = mock_td.call_args.kwargs["task_data"]
+        assert task_data["assigned_to_id"] == 5
+
+    def test_editar_tarea_sin_assigned_to_id(self, main_window):
+        """_editar_tarea debe incluir assigned_to_id=0 en task_data
+        cuando el issue NO tiene assigned_to en la respuesta de la API."""
+        main_window._redmine.get_issue_with_journals.return_value = {
+            "id": 42,
+            "subject": "Test",
+            "description": "",
+            "project": {"id": 1},
+            "tracker": {"id": 1},
+            "priority": {"id": 2},
+            "category_id": 0,
+            # No hay clave "assigned_to"
+            "start_date": "",
+            "due_date": "",
+            "done_ratio": 0,
+            "status": {"id": 1},
+            "_journals": [],
+            "_attachments": [],
+        }
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+
+        mock_dlg = MagicMock()
+        mock_dlg.exec.return_value = QDialog.DialogCode.Accepted
+
+        with patch("app.main_window.TaskDialog", return_value=mock_dlg) as mock_td:
+            mock_td.DialogCode = QDialog.DialogCode
+            main_window._editar_tarea(42)
+
+        mock_td.assert_called_once()
+        task_data = mock_td.call_args.kwargs["task_data"]
+        assert task_data["assigned_to_id"] == 0
