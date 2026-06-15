@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock, patch
+from datetime import date
 
 import pytest
 from PyQt6.QtWidgets import QMainWindow, QDialog, QMessageBox
@@ -145,12 +146,11 @@ class TestCompletarTareaDueDate:
 
 
 class TestCompletarTareaSinDueDate:
-    """_completar_tarea debe omitir due_date si el issue no tiene due_date."""
+    """_completar_tarea intenta con due_date y reintenta sin él si falla."""
 
-    def test_completar_tarea_sin_due_date_no_incluye_due_date(self, main_window):
-        """_completar_tarea debe pasar due_date='' si el issue no tiene due_date."""
+    def test_completar_tarea_intenta_con_due_date_primero(self, main_window):
+        """_completar_tarea debe enviar due_date=today en el primer intento."""
         main_window._task_table.get_selected_issue_id.return_value = 42
-        main_window._task_table.get_selected_row_data.return_value = {}  # Sin due_date
 
         dlg = MagicMock(spec=CompleteDialog)
         dlg.notes = ""
@@ -165,7 +165,34 @@ class TestCompletarTareaSinDueDate:
 
         main_window._redmine.complete_issue.assert_called_once()
         call_kwargs = main_window._redmine.complete_issue.call_args.kwargs
-        assert call_kwargs["due_date"] == ""
+        assert call_kwargs["due_date"] == date.today().isoformat()
+
+    def test_completar_tarea_reintenta_sin_due_date_si_validation_error(self, main_window):
+        """_completar_tarea debe reintentar sin due_date si Redmine rechaza el campo."""
+        from app.services.redmine_client import RedmineValidationError
+
+        main_window._task_table.get_selected_issue_id.return_value = 42
+
+        dlg = MagicMock(spec=CompleteDialog)
+        dlg.notes = ""
+        dlg.exec.return_value = QDialog.DialogCode.Accepted
+
+        # Primera llamada falla con validation error
+        main_window._redmine.complete_issue.side_effect = [RedmineValidationError("due_date rechazado"), None]
+
+        mock_class = MagicMock(spec=CompleteDialog)
+        mock_class.DialogCode = QDialog.DialogCode
+        mock_class.return_value = dlg
+
+        with patch("app.main_window.CompleteDialog", mock_class):
+            main_window._completar_tarea()
+
+        # Se llamó dos veces: primero con due_date, segundo sin
+        assert main_window._redmine.complete_issue.call_count == 2
+        first_call_kwargs = main_window._redmine.complete_issue.call_args_list[0].kwargs
+        second_call_kwargs = main_window._redmine.complete_issue.call_args_list[1].kwargs
+        assert first_call_kwargs["due_date"] == date.today().isoformat()
+        assert second_call_kwargs.get("due_date", "") == ""
 
 
 class TestCompletarTareaResolvedStatus:

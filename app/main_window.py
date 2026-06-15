@@ -612,10 +612,6 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            # Obtener datos del issue para verificar si tiene due_date
-            issue_data = self._task_table.get_selected_row_data()
-            has_due_date = bool(issue_data.get("due_date", "")) if issue_data else False
-
             resolved_status = next((sid for sid, sname in self._statuses if sname.lower() in ("resuelta", "resolved")), None)
             if resolved_status is None:
                 QMessageBox.warning(self, "No se puede completar",
@@ -624,13 +620,23 @@ class MainWindow(QMainWindow):
                                     "Contacte con el administrador de Redmine.")
                 return
 
-            self._redmine.complete_issue(
-                issue_id,
-                done_ratio=100,
-                status_id=resolved_status,
-                notes=dlg.notes,
-                due_date=date.today().isoformat() if has_due_date else "",
-            )
+            due_date_str = date.today().isoformat()
+            try:
+                self._redmine.complete_issue(
+                    issue_id,
+                    done_ratio=100,
+                    status_id=resolved_status,
+                    notes=dlg.notes,
+                    due_date=due_date_str,
+                )
+            except RedmineValidationError:
+                # Si Redmine rechaza el due_date, reintentar sin él
+                self._redmine.complete_issue(
+                    issue_id,
+                    done_ratio=100,
+                    status_id=resolved_status,
+                    notes=dlg.notes,
+                )
             self._cargar_issues()
             self._tray.notify(APP_DISPLAY_NAME, f"Tarea #{issue_id} completada")
         except RedmineValidationError as e:
