@@ -154,6 +154,22 @@ class CommentsWidget(QWidget):
         self._completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         self._completer.setMaxVisibleItems(5)
 
+        def insert_mention(completed_text: str):
+            """Reemplaza @texto_parcial por @Nombre Completo en el editor."""
+            try:
+                cursor = self._note_edit.textCursor()
+                text = self._note_edit.toPlainText()
+                pos = cursor.position()
+                at_pos = text.rfind('@', 0, pos)
+                if at_pos >= 0:
+                    cursor.setPosition(at_pos)
+                    cursor.setPosition(pos, cursor.MoveMode.KeepAnchor)
+                    cursor.insertText(f"@{completed_text} ")
+            except RuntimeError:
+                pass
+
+        self._completer.activated.connect(insert_mention)
+
         def on_text_changed():
             if self._completer is None:
                 return
@@ -196,6 +212,22 @@ def setup_mention_completer(text_edit: QPlainTextEdit, names: list[str]):
     completer.setFilterMode(Qt.MatchFlag.MatchContains)
     completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
     completer.setMaxVisibleItems(5)
+
+    def insert_mention(completed_text: str):
+        """Reemplaza @texto_parcial por @Nombre Completo en el editor."""
+        try:
+            cursor = text_edit.textCursor()
+            text = text_edit.toPlainText()
+            pos = cursor.position()
+            at_pos = text.rfind('@', 0, pos)
+            if at_pos >= 0:
+                cursor.setPosition(at_pos)
+                cursor.setPosition(pos, cursor.MoveMode.KeepAnchor)
+                cursor.insertText(f"@{completed_text} ")
+        except RuntimeError:
+            pass
+
+    completer.activated.connect(insert_mention)
 
     def on_text_changed():
         try:
