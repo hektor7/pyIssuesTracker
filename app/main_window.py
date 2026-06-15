@@ -855,6 +855,11 @@ class MainWindow(QMainWindow):
             try:
                 self._redmine.update_issue(issue_id, done_ratio=valor)
                 self._cargar_issues()
+            except RedmineValidationError as e:
+                errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
+                QMessageBox.warning(self, "Cambio no permitido",
+                                    f"Redmine rechazó el cambio de progreso.\n\n"
+                                    f"Detalle:\n{errors_text}")
             except RedmineError as e:
                 QMessageBox.critical(self, "Error", f"No se pudo actualizar el progreso:\n{str(e)}")
 
