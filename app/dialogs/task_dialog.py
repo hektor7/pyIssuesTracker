@@ -232,7 +232,7 @@ class TaskDialog(QDialog):
         self._attachments_group.setVisible(False)  # Oculto hasta cargar
         scroll_layout.addWidget(self._attachments_group)
 
-        # --- Grupo: Adjuntar archivos (solo creación) ---
+        # --- Grupo: Adjuntar archivos ---
         self._upload_group = QGroupBox("Adjuntar archivos")
         upload_layout = QVBoxLayout(self._upload_group)
         upload_layout.setSpacing(4)
@@ -243,7 +243,7 @@ class TaskDialog(QDialog):
 
         self._files_list_layout = QVBoxLayout()
         upload_layout.addLayout(self._files_list_layout)
-        self._upload_group.setVisible(not self._is_edit)
+        self._upload_group.setVisible(True)
         scroll_layout.addWidget(self._upload_group)
 
         scroll_layout.addStretch()
@@ -474,6 +474,7 @@ class TaskDialog(QDialog):
         info.setStyleSheet("background: transparent;")
         f_layout.addWidget(info, 1)
 
+        frame.setProperty("file_path", file_path)
         remove_btn = QPushButton("Eliminar")
         remove_btn.setFixedWidth(80)
         remove_btn.clicked.connect(lambda checked, p=file_path: self._on_remove_file(p))
@@ -486,11 +487,9 @@ class TaskDialog(QDialog):
             self._pending_files.remove(file_path)
         for i in range(self._files_list_layout.count()):
             widget = self._files_list_layout.itemAt(i).widget()
-            if widget:
-                label = widget.findChild(QLabel)
-                if label and file_path in label.text():
-                    widget.deleteLater()
-                    break
+            if widget and widget.property("file_path") == file_path:
+                widget.deleteLater()
+                break
 
     # ================================================================
     # Checklists
@@ -603,6 +602,17 @@ class TaskDialog(QDialog):
                 download_btn.clicked.connect(lambda checked, a=att: self._on_download_attachment(a))
                 f_layout.addWidget(download_btn)
 
+                # Boton eliminar
+                attachment_id = self._attachment_get(att, "id", 0)
+                frame.setProperty("attachment_id", attachment_id)
+                delete_btn = QPushButton("−")
+                delete_btn.setFixedWidth(30)
+                delete_btn.setToolTip("Eliminar adjunto")
+                delete_btn.clicked.connect(
+                    lambda checked, aid=attachment_id, fn=filename: self._on_delete_attachment(aid, fn)
+                )
+                f_layout.addWidget(delete_btn)
+
                 self._attachments_layout.addWidget(frame)
 
         self._attachments_group.setVisible(True)
@@ -624,6 +634,35 @@ class TaskDialog(QDialog):
             self._redmine.download_attachment(content_url, dest_path)
         except Exception as e:
             QMessageBox.warning(self, "Error", f"No se pudo descargar el adjunto:\n{str(e)}")
+
+    def _on_delete_attachment(self, attachment_id: int, filename: str):
+        """Elimina un adjunto previa confirmacion del usuario."""
+        if not self._redmine:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Eliminar adjunto",
+            f"¿Eliminar permanentemente {filename}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if self._redmine.delete_attachment(attachment_id):
+            # Eliminar el widget de la lista visual (buscando por propiedad)
+            for i in range(self._attachments_layout.count()):
+                widget = self._attachments_layout.itemAt(i).widget()
+                if widget and widget.property("attachment_id") == attachment_id:
+                    widget.deleteLater()
+                    break
+        else:
+            QMessageBox.warning(
+                self, "Error",
+                f"No se pudo eliminar el adjunto '{filename}'.\n"
+                f"Es posible que el servidor Redmine no soporte esta operación."
+            )
 
     @staticmethod
     def _attachment_get(att, key: str, default=""):

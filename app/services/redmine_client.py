@@ -509,7 +509,11 @@ class RedmineClient:
         return self._post("/issues.json", {"issue": payload})
 
     def update_issue(self, issue_id: int, **fields) -> dict:
-        return self._put(f"/issues/{issue_id}.json", {"issue": fields})
+        uploads = fields.pop("uploads", None)
+        payload: dict[str, Any] = {"issue": fields}
+        if uploads:
+            payload["uploads"] = uploads
+        return self._put(f"/issues/{issue_id}.json", payload)
 
     def assign_issue(self, issue_id: int, user_id: int, notes: str = "") -> dict:
         fields: dict[str, Any] = {"assigned_to_id": user_id}
@@ -691,6 +695,18 @@ class RedmineClient:
             raise RedmineConnectionError(
                 "Timeout al subir el archivo (puede ser demasiado grande)."
             )
+
+    def delete_attachment(self, attachment_id: int) -> bool:
+        """Elimina un adjunto via DELETE /attachments/{id}.json.
+
+        Returns:
+            True si la eliminacion fue exitosa, False en caso de error.
+        """
+        try:
+            self._delete(f"/attachments/{attachment_id}.json")
+            return True
+        except RedmineError:
+            return False
 
     def download_attachment(self, content_url: str, dest_path: str):
         """Descarga un adjunto desde content_url a dest_path usando streaming."""

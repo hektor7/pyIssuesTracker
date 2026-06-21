@@ -559,6 +559,7 @@ class MainWindow(QMainWindow):
                     due_date=dlg.due_date if dlg.due_enabled else "",
                     done_ratio=dlg.done_ratio,
                     status_id=dlg.status_id if dlg.status_id else None,
+                    uploads=dlg.upload_tokens or None,
                 )
                 self._cargar_issues()
         except RedmineValidationError as e:
