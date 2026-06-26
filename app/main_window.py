@@ -305,6 +305,12 @@ class MainWindow(QMainWindow):
             self._filter_bar.set_priority(self._settings.filter_priority)
             self._filter_bar.set_category(self._settings.filter_category)
             self._filter_bar.set_assigned_to(self._settings.filter_assigned_to)
+            # Restaurar filtro de fecha
+            self._filter_bar.set_date_preset(
+                self._settings.filter_date_preset,
+                self._settings.filter_date_from or None,
+                self._settings.filter_date_to or None,
+            )
         except RedmineError:
             pass
 
@@ -359,25 +365,29 @@ class MainWindow(QMainWindow):
         except RedmineError:
             self._filter_bar.populate_assignees([])
 
-    def _cargar_issues(self, *, track_known: bool = True,
-                       due_date_from: str | None = None,
-                       due_date_to: str | None = None):
+    def _cargar_issues(self, *, track_known: bool = True):
         if not self._redmine:
             return
         project_id = self._filter_bar.selected_project_id or None
         status_filter = self._filter_bar.selected_status
         priority_id = self._filter_bar.selected_priority or None
         category_id = self._filter_bar.selected_category or None
+        due_date_from = self._filter_bar.selected_date_from
+        due_date_to = self._filter_bar.selected_date_to
 
-        assigned_raw = self._filter_bar.selected_assigned_to
-        if assigned_raw == 0:
-            assigned_to_id = None
-        elif assigned_raw == -1:
-            assigned_to_id = "!*"
-        elif assigned_raw == -2:
-            assigned_to_id = "me"
-        else:
-            assigned_to_id = assigned_raw
+        assigned_raw = self._filter_bar.selected_assigned_to  # list[int]
+        assigned_to_ids: list | None = None
+        if assigned_raw and 0 not in assigned_raw:  # "Todos" no está seleccionado
+            assigned_to_ids = []
+            for aid in assigned_raw:
+                if aid == -1:
+                    assigned_to_ids.append("!*")
+                elif aid == -2:
+                    assigned_to_ids.append("me")
+                else:
+                    assigned_to_ids.append(aid)
+            if not assigned_to_ids:
+                assigned_to_ids = None
 
         try:
             issues = self._redmine.get_issues(
@@ -385,9 +395,10 @@ class MainWindow(QMainWindow):
                 status_filter=status_filter,
                 category_id=category_id,
                 priority_id=priority_id,
-                assigned_to_id=assigned_to_id,
+                assigned_to_id=assigned_to_ids,
                 due_date_from=due_date_from,
                 due_date_to=due_date_to,
+                current_user_id=self._current_user_id,
             )
             issues_dict = [
                 {
@@ -406,6 +417,8 @@ class MainWindow(QMainWindow):
                     "author_name": iss.author_name,
                     "tracker_name": iss.tracker_name,
                     "priority_name": iss.priority_name,
+                    "created_on": iss.created_on,
+                    "updated_on": iss.updated_on,
                     "url": urljoin(self._settings.redmine_url.rstrip("/") + "/", f"issues/{iss.id}"),
                 }
                 for iss in issues
@@ -461,7 +474,7 @@ class MainWindow(QMainWindow):
         )
         if dlg.exec() == TaskDialog.DialogCode.Accepted:
             try:
-                self._redmine.create_issue(
+                result = self._redmine.create_issue(
                     project_id=dlg.project_id,
                     subject=dlg.subject,
                     description=dlg.description,
@@ -474,6 +487,22 @@ class MainWindow(QMainWindow):
                     done_ratio=dlg.done_ratio,
                     uploads=dlg.upload_tokens or None,
                 )
+                # Crear items del checklist pendientes
+                new_issue_id = result.get("issue", {}).get("id", 0)
+                if new_issue_id and dlg.pending_checklist_items:
+                    failed_items: list[str] = []
+                    for subject in dlg.pending_checklist_items:
+                        try:
+                            self._redmine.create_checklist_item(new_issue_id, subject)
+                        except Exception:
+                            failed_items.append(subject)
+                    if failed_items:
+                        QMessageBox.warning(
+                            self, "Checklist parcial",
+                            f"La tarea se creó correctamente, pero algunos items del checklist "
+                            f"no pudieron crearse:\n" +
+                            "\n".join(f"  • {item}" for item in failed_items)
+                        )
                 self._cargar_issues()
             except RedmineValidationError as e:
                 errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
@@ -740,8 +769,8 @@ class MainWindow(QMainWindow):
         self._settings.filter_category = category_id
         self._cargar_issues()
 
-    def _on_filter_assigned_changed(self, assigned_to_id: int):
-        self._settings.filter_assigned_to = assigned_to_id
+    def _on_filter_assigned_changed(self, assigned_to_ids: list):
+        self._settings.filter_assigned_to = assigned_to_ids
         self._cargar_issues()
 
     def _on_filter_fixed_changed(self, fixed: bool):
@@ -755,7 +784,10 @@ class MainWindow(QMainWindow):
         self._cargar_issues()
 
     def _on_filter_date_changed(self, due_date_from: str, due_date_to: str):
-        self._cargar_issues(due_date_from=due_date_from or None, due_date_to=due_date_to or None)
+        self._settings.filter_date_preset = self._filter_bar.selected_date_preset
+        self._settings.filter_date_from = self._filter_bar.selected_date_from or ""
+        self._settings.filter_date_to = self._filter_bar.selected_date_to or ""
+        self._cargar_issues()
 
     def _update_poll_timer(self):
         subscribed = self._settings.notifications_projects

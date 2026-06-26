@@ -370,9 +370,10 @@ class RedmineClient:
         status_filter: str = "open",
         category_id: int | None = None,
         priority_id: int | None = None,
-        assigned_to_id: int | str | None = None,
+        assigned_to_id: int | str | list | None = None,
         due_date_from: str | None = None,
         due_date_to: str | None = None,
+        current_user_id: int = 0,
         limit: int = REDMINE_PAGE_LIMIT,
         offset: int = 0,
     ) -> list[RedmineIssue]:
@@ -390,14 +391,30 @@ class RedmineClient:
             params["category_id"] = category_id
         if priority_id:
             params["priority_id"] = priority_id
-        if assigned_to_id == "!*":
-            params["assigned_to_id"] = "!*"
-        elif assigned_to_id == "me":
-            params["assigned_to_id"] = "me"
-        elif assigned_to_id:
+
+        # Filtro de asignado: soporta int, str, lista, o None.
+        # Si hay múltiples valores, se filtra client-side para garantizar OR correcto.
+        client_side_ids: set | None = None
+        if isinstance(assigned_to_id, list):
+            if len(assigned_to_id) == 0:
+                assigned_to_id = None
+            elif len(assigned_to_id) == 1:
+                assigned_to_id = assigned_to_id[0]  # valor único → API
+            else:
+                # Múltiples valores: no filtrar en API, hacer todo client-side
+                client_side_ids = set(assigned_to_id)
+                assigned_to_id = None
+
+        if isinstance(assigned_to_id, str):
             params["assigned_to_id"] = assigned_to_id
+        elif isinstance(assigned_to_id, int):
+            params["assigned_to_id"] = assigned_to_id
+
         if due_date_from and due_date_to:
-            params["due_date"] = f"><{due_date_from}|{due_date_to}"
+            if due_date_from == due_date_to:
+                params["due_date"] = f"={due_date_from}"
+            else:
+                params["due_date"] = f"><{due_date_from}|{due_date_to}"
         elif due_date_from:
             params["due_date"] = f">={due_date_from}"
         elif due_date_to:
@@ -433,6 +450,24 @@ class RedmineClient:
                 attachments=attachments,
             )
             issues.append(iss)
+
+        # Filtro client-side para múltiples asignados (OR lógico entre todos)
+        if client_side_ids is not None:
+            has_none = "!*" in client_side_ids
+            has_me = "me" in client_side_ids
+            num_ids = {a for a in client_side_ids if isinstance(a, int)}
+
+            filtered: list[RedmineIssue] = []
+            for iss in issues:
+                aid = iss.assigned_to_id
+                if aid in num_ids:
+                    filtered.append(iss)
+                elif has_none and aid == 0:
+                    filtered.append(iss)
+                elif has_me and aid == current_user_id:
+                    filtered.append(iss)
+            issues = filtered
+
         return issues
 
     @staticmethod

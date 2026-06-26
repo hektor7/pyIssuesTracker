@@ -8,7 +8,30 @@ from PyQt6.QtWidgets import (
     QProgressBar, QMenu, QDateEdit,
 )
 
-from app.utils.dates import iso_to_display
+from app.utils.dates import iso_to_display, iso_datetime_to_display
+
+
+class DateSortItem(QTableWidgetItem):
+    """QTableWidgetItem que ordena fechas cronológicamente usando ISO.
+
+    Almacena la fecha ISO en UserRole para comparación y muestra
+    el texto formateado (DD/MM/YY HH:MM) como display.
+    """
+
+    ISO_ROLE = Qt.ItemDataRole.UserRole + 100
+
+    def __init__(self, iso_str: str, display_text: str):
+        super().__init__(display_text)
+        if iso_str:
+            self.setData(self.ISO_ROLE, iso_str)
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        self_iso = self.data(self.ISO_ROLE)
+        other_iso = other.data(self.ISO_ROLE)
+        if self_iso is not None and other_iso is not None:
+            return str(self_iso) < str(other_iso)
+        # Fallback a comparación de texto si no hay ISO
+        return super().__lt__(other)
 
 
 class TaskTable(QTableWidget):
@@ -26,8 +49,10 @@ class TaskTable(QTableWidget):
     COL_ASSIGNED_TO = 6
     COL_PROGRESS = 7
     COL_URL = 8
+    COL_CREATED = 9
+    COL_UPDATED = 10
 
-    HEADERS = ["ID", "Tracker", "Título", "Fecha inicio", "Fecha fin", "Estado", "Asignado a", "Progreso %", ""]
+    HEADERS = ["ID", "Tracker", "Título", "Fecha inicio", "Fecha fin", "Estado", "Asignado a", "Progreso %", "", "Creado", "Modificado"]
 
     _BG_INMEDIATA = QColor(200, 0, 0)
     _BG_URGENTE = QColor(180, 20, 20)
@@ -57,6 +82,8 @@ class TaskTable(QTableWidget):
         header.setSectionResizeMode(self.COL_PROGRESS, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_URL, QHeaderView.ResizeMode.Fixed)
         header.resizeSection(self.COL_URL, 40)
+        header.setSectionResizeMode(self.COL_CREATED, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self.COL_UPDATED, QHeaderView.ResizeMode.ResizeToContents)
 
         self.cellDoubleClicked.connect(self._on_double_click)
         self._issues: list[dict] = []
@@ -410,14 +437,16 @@ class TaskTable(QTableWidget):
                 title_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_TITLE, title_item)
 
-            start_item = QTableWidgetItem(iso_to_display(issue.get("start_date", "")))
+            start_iso = issue.get("start_date", "")
+            start_item = DateSortItem(start_iso, iso_to_display(start_iso))
             start_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if bg_color:
                 start_item.setBackground(bg_color)
                 start_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_START_DATE, start_item)
 
-            due_item = QTableWidgetItem(iso_to_display(issue.get("due_date", "")))
+            due_iso = issue.get("due_date", "")
+            due_item = DateSortItem(due_iso, iso_to_display(due_iso))
             due_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if bg_color:
                 due_item.setBackground(bg_color)
@@ -457,6 +486,26 @@ class TaskTable(QTableWidget):
             issue_url = issue.get("url", "")
             btn.clicked.connect(lambda checked, iid=issue_id, url=issue_url: self.tarea_abrir_url.emit(iid, url))
             self.setCellWidget(row, self.COL_URL, btn)
+
+            created_iso = issue.get("created_on", "")
+            created_item = DateSortItem(
+                created_iso, iso_datetime_to_display(created_iso)
+            )
+            created_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if bg_color:
+                created_item.setBackground(bg_color)
+                created_item.setForeground(Qt.GlobalColor.white)
+            self.setItem(row, self.COL_CREATED, created_item)
+
+            updated_iso = issue.get("updated_on", "")
+            updated_item = DateSortItem(
+                updated_iso, iso_datetime_to_display(updated_iso)
+            )
+            updated_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if bg_color:
+                updated_item.setBackground(bg_color)
+                updated_item.setForeground(Qt.GlobalColor.white)
+            self.setItem(row, self.COL_UPDATED, updated_item)
 
     def get_selected_issue_id(self) -> int | None:
         rows = set()

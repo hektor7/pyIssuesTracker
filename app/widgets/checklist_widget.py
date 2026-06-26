@@ -125,6 +125,13 @@ class ChecklistWidget(QWidget):
             self._items_layout.removeWidget(cb)
             cb.deleteLater()
 
+    def set_item_checked(self, item_id: int, checked: bool):
+        """Establece el estado checked de un item sin emitir señal."""
+        if item_id in self._checkboxes:
+            self._checkboxes[item_id].blockSignals(True)
+            self._checkboxes[item_id].setChecked(checked)
+            self._checkboxes[item_id].blockSignals(False)
+
     def clear(self):
         """Limpia todos los items y el campo de texto."""
         self._new_item_edit.clear()

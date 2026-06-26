@@ -234,13 +234,24 @@ class SettingsManager:
         self._settings.setValue(KEY_FILTER_CATEGORY, value)
 
     @property
-    def filter_assigned_to(self) -> int:
-        val = self._settings.value(KEY_FILTER_ASSIGNED_TO, 0)
-        return int(val) if val else 0
+    def filter_assigned_to(self) -> list:
+        val = self._settings.value(KEY_FILTER_ASSIGNED_TO, "[0]")
+        try:
+            parsed = json.loads(val) if isinstance(val, str) else val
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Fallback: valor legacy como int
+        try:
+            legacy = int(val)
+            return [legacy] if legacy != 0 else [0]
+        except (ValueError, TypeError):
+            return [0]
 
     @filter_assigned_to.setter
-    def filter_assigned_to(self, value: int):
-        self._settings.setValue(KEY_FILTER_ASSIGNED_TO, value)
+    def filter_assigned_to(self, value: list):
+        self._settings.setValue(KEY_FILTER_ASSIGNED_TO, json.dumps(value))
 
     @property
     def filter_date_preset(self) -> int:

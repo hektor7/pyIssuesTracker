@@ -6,13 +6,15 @@ from PyQt6.QtWidgets import (
     QCompleter, QLineEdit, QDateEdit,
 )
 
+from app.widgets.multi_select_combo import MultiSelectCombo
+
 
 class FilterBar(QWidget):
     proyecto_cambiado = pyqtSignal(int, str)
     estado_cambiado = pyqtSignal(str)
     prioridad_cambiada = pyqtSignal(int)
     categoria_cambiada = pyqtSignal(int)
-    asignado_cambiado = pyqtSignal(int)
+    asignado_cambiado = pyqtSignal(list)
     fijar_cambiado = pyqtSignal(bool)
     busqueda_cambiada = pyqtSignal(str)
     fecha_cambiada = pyqtSignal(str, str)  # due_date_from, due_date_to
@@ -21,6 +23,8 @@ class FilterBar(QWidget):
         super().__init__(parent)
         self._projects: list[tuple[int, str]] = []
         self._project_lookup: dict[int, str] = {}
+        self._current_date_from: str | None = None
+        self._current_date_to: str | None = None
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(4, 2, 4, 2)
         main_layout.setSpacing(4)
@@ -95,18 +99,14 @@ class FilterBar(QWidget):
         row1.addSpacing(16)
         row1.addWidget(QLabel("Asignado a:"))
 
-        self._assigned_combo = QComboBox()
-        self._assigned_combo.setEditable(True)
-        self._assigned_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self._assigned_combo.setMinimumWidth(150)
-        self._assigned_combo.currentIndexChanged.connect(self._on_assigned_changed)
-        self._assigned_combo.lineEdit().returnPressed.connect(self._on_assigned_enter_pressed)
+        self._assigned_combo = MultiSelectCombo()
+        self._assigned_combo.set_fixed_options([
+            (MultiSelectCombo.ALL, "Todos"),
+            (MultiSelectCombo.NONE, "Sin asignar"),
+            (MultiSelectCombo.ME, "Asignado a mí"),
+        ])
+        self._assigned_combo.seleccion_cambiada.connect(self._on_assigned_changed)
         row1.addWidget(self._assigned_combo)
-
-        self._assigned_completer = QCompleter([], self)
-        self._assigned_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self._assigned_completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        self._assigned_combo.setCompleter(self._assigned_completer)
 
         row1.addSpacing(16)
         row1.addWidget(QLabel("Fecha fin:"))
@@ -218,22 +218,7 @@ class FilterBar(QWidget):
         self._category_combo.blockSignals(False)
 
     def populate_assignees(self, assignees: list[tuple[int, str]]):
-        self._assigned_combo.blockSignals(True)
-        current_data = self._assigned_combo.currentData()
-        self._assigned_combo.clear()
-        self._assigned_combo.addItem("(Todos)", 0)
-        self._assigned_combo.addItem("Sin asignar", -1)
-        self._assigned_combo.addItem("Asignado a mí", -2)
-        names = []
-        for uid, name in assignees:
-            self._assigned_combo.addItem(name, uid)
-            names.append(name)
-        for i in range(self._assigned_combo.count()):
-            if self._assigned_combo.itemData(i) == current_data:
-                self._assigned_combo.setCurrentIndex(i)
-                break
-        self._assigned_completer.model().setStringList(names)
-        self._assigned_combo.blockSignals(False)
+        self._assigned_combo.set_items(assignees)
 
     def set_status(self, status: str):
         for i in range(self._status_combo.count()):
@@ -253,11 +238,8 @@ class FilterBar(QWidget):
                 self._category_combo.setCurrentIndex(i)
                 return
 
-    def set_assigned_to(self, assigned_to_id: int):
-        for i in range(self._assigned_combo.count()):
-            if self._assigned_combo.itemData(i) == assigned_to_id:
-                self._assigned_combo.setCurrentIndex(i)
-                return
+    def set_assigned_to(self, assigned_to_ids: list):
+        self._assigned_combo.set_selected_ids(assigned_to_ids)
 
     def set_fixed(self, fixed: bool):
         self._fixed_checkbox.setChecked(fixed)
@@ -284,12 +266,52 @@ class FilterBar(QWidget):
         return self._category_combo.currentData() or 0
 
     @property
-    def selected_assigned_to(self) -> int:
-        return self._assigned_combo.currentData() or 0
+    def selected_assigned_to(self) -> list:
+        return self._assigned_combo.selected_ids()
+
+    @property
+    def selected_date_preset(self) -> int:
+        """Índice del preset de fecha seleccionado (0=Sin filtro, ..., 7=Rango)."""
+        return self._date_preset_combo.currentIndex()
+
+    @property
+    def selected_date_from(self) -> str | None:
+        """Fecha 'desde' actual del filtro de fecha, o None si no hay filtro."""
+        if self._current_date_from:
+            return self._current_date_from
+        return None
+
+    @property
+    def selected_date_to(self) -> str | None:
+        """Fecha 'hasta' actual del filtro de fecha, o None si no hay filtro."""
+        if self._current_date_to:
+            return self._current_date_to
+        return None
 
     @property
     def is_fixed(self) -> bool:
         return self._fixed_checkbox.isChecked()
+
+    def set_date_preset(self, index: int, date_from: str | None = None,
+                        date_to: str | None = None):
+        """Restaura el filtro de fecha desde valores persistidos.
+
+        Args:
+            index: Índice del preset en el combo (0=Sin filtro, ..., 7=Rango personalizado)
+            date_from: Fecha desde en ISO (YYYY-MM-DD) para rango personalizado
+            date_to: Fecha hasta en ISO (YYYY-MM-DD) para rango personalizado
+        """
+        if 0 <= index < self._date_preset_combo.count():
+            self._date_preset_combo.setCurrentIndex(index)
+        if index == 7 and date_from and date_to:
+            from PyQt6.QtCore import QDate
+            df = QDate.fromString(date_from, "yyyy-MM-dd")
+            dt = QDate.fromString(date_to, "yyyy-MM-dd")
+            if df.isValid():
+                self._date_from_edit.setDate(df)
+            if dt.isValid():
+                self._date_to_edit.setDate(dt)
+            self._update_date_filter(date_from, date_to)
 
     def _on_project_selected(self, index: int):
         if index < 0:
@@ -321,48 +343,36 @@ class FilterBar(QWidget):
         category = self._category_combo.currentData() or 0
         self.categoria_cambiada.emit(category)
 
-    def _on_assigned_changed(self, index: int):
-        assigned = self._assigned_combo.currentData() or 0
+    def _on_assigned_changed(self, assigned: list):
         self.asignado_cambiado.emit(assigned)
-
-    def _on_assigned_enter_pressed(self):
-        text = self._assigned_combo.currentText().strip().lower()
-        for i in range(self._assigned_combo.count()):
-            if self._assigned_combo.itemText(i).lower() == text:
-                self._assigned_combo.setCurrentIndex(i)
-                return
-        for i in range(self._assigned_combo.count()):
-            if text in self._assigned_combo.itemText(i).lower():
-                self._assigned_combo.setCurrentIndex(i)
-                return
 
     def _on_date_preset_changed(self, index: int):
         today = date.today()
         if index == 0:  # Sin filtro
             self._date_from_edit.setVisible(False)
             self._date_to_edit.setVisible(False)
-            self.fecha_cambiada.emit("", "")
+            self._update_date_filter(None, None)
         elif index == 1:  # Hoy
             self._date_from_edit.setVisible(False)
             self._date_to_edit.setVisible(False)
-            self.fecha_cambiada.emit(today.isoformat(), today.isoformat())
+            self._update_date_filter(today.isoformat(), today.isoformat())
         elif index == 2:  # Ayer
             self._date_from_edit.setVisible(False)
             self._date_to_edit.setVisible(False)
             yesterday = today - timedelta(days=1)
-            self.fecha_cambiada.emit(yesterday.isoformat(), yesterday.isoformat())
+            self._update_date_filter(yesterday.isoformat(), yesterday.isoformat())
         elif index == 3:  # Esta semana
             self._date_from_edit.setVisible(False)
             self._date_to_edit.setVisible(False)
             monday = today - timedelta(days=today.weekday())
             sunday = monday + timedelta(days=6)
-            self.fecha_cambiada.emit(monday.isoformat(), sunday.isoformat())
+            self._update_date_filter(monday.isoformat(), sunday.isoformat())
         elif index == 4:  # Semana pasada
             self._date_from_edit.setVisible(False)
             self._date_to_edit.setVisible(False)
             monday = today - timedelta(days=today.weekday() + 7)
             sunday = monday + timedelta(days=6)
-            self.fecha_cambiada.emit(monday.isoformat(), sunday.isoformat())
+            self._update_date_filter(monday.isoformat(), sunday.isoformat())
         elif index == 5:  # Este mes
             self._date_from_edit.setVisible(False)
             self._date_to_edit.setVisible(False)
@@ -371,7 +381,7 @@ class FilterBar(QWidget):
                 last = today.replace(year=today.year + 1, month=1, day=1) - timedelta(days=1)
             else:
                 last = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
-            self.fecha_cambiada.emit(first.isoformat(), last.isoformat())
+            self._update_date_filter(first.isoformat(), last.isoformat())
         elif index == 6:  # Mes pasado
             self._date_from_edit.setVisible(False)
             self._date_to_edit.setVisible(False)
@@ -381,25 +391,31 @@ class FilterBar(QWidget):
             else:
                 first = today.replace(month=today.month - 1, day=1)
                 last = today.replace(day=1) - timedelta(days=1)
-            self.fecha_cambiada.emit(first.isoformat(), last.isoformat())
+            self._update_date_filter(first.isoformat(), last.isoformat())
         elif index == 7:  # Rango personalizado
             self._date_from_edit.setVisible(True)
             self._date_to_edit.setVisible(True)
-            self.fecha_cambiada.emit(
-                self._date_from_edit.date().toString("yyyy-MM-dd"),
-                self._date_to_edit.date().toString("yyyy-MM-dd"),
-            )
+            # No aplicar filtro hasta que el usuario seleccione fechas explícitamente
+            self._current_date_from = None
+            self._current_date_to = None
+            self.fecha_cambiada.emit("", "")
+
+    def _update_date_filter(self, date_from: str | None, date_to: str | None):
+        """Almacena los valores de fecha y emite la señal."""
+        self._current_date_from = date_from
+        self._current_date_to = date_to
+        self.fecha_cambiada.emit(date_from or "", date_to or "")
 
     def _on_date_from_changed(self):
         if self._date_preset_combo.currentIndex() == 7:
-            self.fecha_cambiada.emit(
+            self._update_date_filter(
                 self._date_from_edit.date().toString("yyyy-MM-dd"),
                 self._date_to_edit.date().toString("yyyy-MM-dd"),
             )
 
     def _on_date_to_changed(self):
         if self._date_preset_combo.currentIndex() == 7:
-            self.fecha_cambiada.emit(
+            self._update_date_filter(
                 self._date_from_edit.date().toString("yyyy-MM-dd"),
                 self._date_to_edit.date().toString("yyyy-MM-dd"),
             )

@@ -40,6 +40,8 @@ class TaskDialog(QDialog):
         self._current_user_id = current_user_id
         self._pending_files: list[str] = []
         self._upload_tokens: list[dict] = []
+        self._pending_checklist_items: list[str] = []  # items en modo creación
+        self._temp_checklist_counter: int = -1  # IDs temporales negativos
 
         self.setWindowTitle("Editar tarea" if self._is_edit else "Nueva tarea")
         self.setMinimumWidth(700)
@@ -211,7 +213,10 @@ class TaskDialog(QDialog):
         self._checklist_widget.item_agregado.connect(self._on_checklist_item_added)
         self._checklist_widget.item_eliminado.connect(self._on_checklist_item_deleted)
         checklist_layout.addWidget(self._checklist_widget)
-        self._checklist_group.setVisible(False)  # Oculto hasta cargar
+        # En modo edición se oculta hasta que _load_checklists confirme que hay items;
+        # en modo creación se muestra siempre.
+        if self._is_edit:
+            self._checklist_group.setVisible(False)
         scroll_layout.addWidget(self._checklist_group)
 
         # --- Grupo: Comentarios ---
@@ -512,6 +517,10 @@ class TaskDialog(QDialog):
             self._checklist_group.setVisible(False)
 
     def _on_checklist_item_toggled(self, item_id: int, checked: bool):
+        # En modo creación, los items aún no existen en Redmine; revertir toggle
+        if not self._is_edit:
+            self._checklist_widget.set_item_checked(item_id, not checked)
+            return
         if self._redmine:
             try:
                 self._redmine.update_checklist_item(item_id, is_done=1 if checked else 0)
@@ -519,6 +528,15 @@ class TaskDialog(QDialog):
                 pass  # Silencioso, el usuario ya ve el toggle
 
     def _on_checklist_item_added(self, subject: str):
+        if not self._is_edit:
+            # Modo creación: almacenar pendiente y añadir widget con ID temporal
+            self._pending_checklist_items.append(subject)
+            self._checklist_widget.add_item_widget(
+                self._temp_checklist_counter, subject, False
+            )
+            self._temp_checklist_counter -= 1
+            return
+
         issue_id = self._task_data.get("id", 0)
         if self._redmine and issue_id:
             try:
@@ -534,6 +552,15 @@ class TaskDialog(QDialog):
                 pass
 
     def _on_checklist_item_deleted(self, item_id: int):
+        if not self._is_edit:
+            # Modo creación: eliminar de la lista pendiente y del widget
+            if item_id < 0:
+                idx = -(item_id + 1)
+                if 0 <= idx < len(self._pending_checklist_items):
+                    self._pending_checklist_items.pop(idx)
+            self._checklist_widget.remove_item_widget(item_id)
+            return
+
         if self._redmine:
             try:
                 self._redmine.delete_checklist_item(item_id)
@@ -799,3 +826,8 @@ class TaskDialog(QDialog):
     @property
     def upload_tokens(self) -> list[dict]:
         return self._upload_tokens
+
+    @property
+    def pending_checklist_items(self) -> list[str]:
+        """Devuelve los items de checklist pendientes de crear (solo modo nueva tarea)."""
+        return list(self._pending_checklist_items)
