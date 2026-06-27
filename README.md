@@ -188,17 +188,80 @@ pyIssuesTracker/
 │   │   ├── status_indicator.py  # LED de estado
 │   │   ├── toolbar.py           # Barra de herramientas
 │   │   ├── filter_bar.py        # Filtros de proyecto y estado
-│   │   └── task_table.py        # Tabla de tareas
+│   │   ├── task_table.py        # Tabla de tareas
+│   │   ├── checklist_widget.py  # Checklist de tareas (plugin RedmineUP)
+│   │   ├── comments_widget.py   # Comentarios de tareas
+│   │   └── multi_select_combo.py # Combo multiselección con checkboxes
 │   ├── dialogs/               # Ventanas de diálogo
 │   │   ├── settings_dialog.py   # Configuración (3 pestañas)
 │   │   ├── task_dialog.py       # Crear/editar tarea
 │   │   ├── assign_dialog.py     # Asignar tarea
+│   │   ├── complete_dialog.py   # Completar tarea
 │   │   └── reject_dialog.py     # Rechazar tarea
 │   ├── services/              # Lógica de negocio
 │   │   ├── settings_manager.py  # Persistencia con QSettings
 │   │   ├── redmine_client.py    # Cliente de la API de Redmine
 │   │   └── update_manager.py    # Verificación de versiones en GitHub
 │   └── utils/
-│       └── constants.py         # Claves de configuración y valores por defecto
+│       ├── constants.py         # Claves de configuración y valores por defecto
+│       └── dates.py             # Formateo de fechas ISO ↔ display
+├── tests/                     # Tests unitarios (144 tests, pytest)
+├── scripts/                   # Scripts auxiliares
+│   └── release-notes.py       # Generador de release notes
 └── pyproject.toml             # Configuración del paquete Python
+```
+
+---
+
+## Desarrollo
+
+### Tests
+
+```bash
+# Instalar dependencias de test
+pip install pytest httpx
+
+# Ejecutar todos los tests
+python -m pytest tests/ -v
+```
+
+### Workflow de release
+
+Las releases se crean con `gh release create` y los binarios (Linux + Windows) se generan automáticamente vía GitHub Actions.
+
+**Procedimiento correcto:**
+
+```bash
+# 1. Bump version en app/__init__.py
+#    __version__ = "0.3.XX"
+
+# 2. Commit y push
+git add app/__init__.py
+git commit -m "chore: bump version 0.3.XX → 0.3.YY"
+git push origin main
+
+# 3. Crear release (dispara el build de binarios)
+gh release create v0.3.YY \
+  --title "v0.3.YY — Descripción corta" \
+  --notes "Release notes en markdown..."
+```
+
+### ⚠️ Precauciones CI/CD
+
+| Problema | Causa | Solución |
+|---|---|---|
+| `action-gh-release@v1` falla con 404 | Node 20 deprecado en GitHub Actions | Usar **`softprops/action-gh-release@v2`** |
+| Workflow se dispara 2 veces | Tener triggers `push: tags` + `release: published` | Usar **solo `release: published`** |
+| Workflow antiguo sigue corriendo | El archivo `.github/workflows/release.yml` viejo persiste en GitHub | **Eliminar** el workflow obsoleto si se crea uno nuevo |
+| Assets no se suben | Race condition entre 2 workflows compitiendo | Asegurar **un solo workflow activo** con `release: published` |
+
+### OpenSpec
+
+El proyecto usa [OpenSpec](https://github.com/Fission-AI/OpenSpec) para gestionar cambios (`spec-driven` schema). Comandos principales:
+
+```bash
+/opsx-ff <nombre>     # Fast-forward: genera proposal + design + specs + tasks
+/opsx-apply           # Implementa las tareas
+/opsx-verify          # Verifica implementación contra specs
+/opsx-archive         # Archiva el cambio y sincroniza specs
 ```

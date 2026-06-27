@@ -55,7 +55,7 @@ def iso_datetime_to_display(iso_str: str) -> str:
 
         # Parsear fecha: YYYY-MM-DD -> DD/MM/YY
         parts = date_part.split("-")
-        if len(parts) != 3:
+        if len(parts) != 3 or not all(p.isdigit() for p in parts):
             return iso_str
         year = parts[0][2:] if len(parts[0]) >= 4 else parts[0]  # 2 últimos dígitos
         display_date = f"{parts[2]}/{parts[1]}/{year}"

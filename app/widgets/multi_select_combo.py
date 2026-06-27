@@ -28,7 +28,7 @@ class MultiSelectCombo(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._items: list[tuple[int, str]] = []  # (id, texto)
-        self._selected_ids: set[int] = set()
+        self._selected_ids: set[int] = {self.ALL}
         self._fixed_options: list[tuple[int, str]] = []  # opciones especiales al inicio
 
         layout = QVBoxLayout(self)
@@ -76,9 +76,10 @@ class MultiSelectCombo(QWidget):
 
     def set_selected_ids(self, ids: list[int]):
         """Establece la selección actual."""
-        self._selected_ids = set(ids)
+        self._selected_ids = set(ids) if ids else {self.ALL}
         self._sync_list_checkmarks()
         self._update_button_text()
+        self.seleccion_cambiada.emit(sorted(self._selected_ids))
 
     def selected_ids(self) -> list[int]:
         """Devuelve la lista de IDs seleccionados."""
