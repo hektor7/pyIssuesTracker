@@ -366,7 +366,7 @@ class RedmineClient:
 
     def get_issues(
         self,
-        project_id: int | None = None,
+        project_id: int | list[int] | None = None,
         status_filter: str = "open",
         category_id: int | None = None,
         priority_id: int | None = None,
@@ -383,6 +383,14 @@ class RedmineClient:
             "sort": "updated_on:desc",
             "include": "attachments",
         }
+        # Normalizar project_id: lista vacía o None → sin filtro; lista de 1 → escalar a int
+        multiple_projects: list[int] | None = None
+        if isinstance(project_id, list):
+            if len(project_id) == 1:
+                project_id = project_id[0]
+            elif len(project_id) > 1:
+                multiple_projects = [pid for pid in project_id if pid]
+                project_id = None
         if project_id:
             params["project_id"] = project_id
         if status_filter:
@@ -420,36 +428,23 @@ class RedmineClient:
         elif due_date_to:
             params["due_date"] = f"<={due_date_to}"
 
-        raw = self._get("/issues.json", params=params)
-        issues_raw = raw.get("issues", [])
+        # Multi-proyecto: una petición por proyecto, fusionando sin duplicados
         issues: list[RedmineIssue] = []
-        for i in issues_raw:
-            attachments = self._parse_attachments(i.get("attachments", []))
-            iss = RedmineIssue(
-                id=i["id"],
-                subject=i.get("subject", ""),
-                description=i.get("description", ""),
-                start_date=i.get("start_date", ""),
-                due_date=i.get("due_date", ""),
-                status_name=i.get("status", {}).get("name", ""),
-                status_id=i.get("status", {}).get("id", 0),
-                done_ratio=i.get("done_ratio", 0),
-                project_id=i.get("project", {}).get("id", 0),
-                project_name=i.get("project", {}).get("name", ""),
-                assigned_to_id=i.get("assigned_to", {}).get("id", 0) if i.get("assigned_to") else 0,
-                assigned_to_name=i.get("assigned_to", {}).get("name", "") if i.get("assigned_to") else "",
-                author_name=i.get("author", {}).get("name", ""),
-                created_on=i.get("created_on", ""),
-                updated_on=i.get("updated_on", ""),
-                tracker_id=i.get("tracker", {}).get("id", 0),
-                tracker_name=i.get("tracker", {}).get("name", ""),
-                priority_id=i.get("priority", {}).get("id", 0),
-                priority_name=i.get("priority", {}).get("name", ""),
-                category_id=i.get("category", {}).get("id", 0),
-                category_name=i.get("category", {}).get("name", ""),
-                attachments=attachments,
-            )
-            issues.append(iss)
+        if multiple_projects:
+            seen_ids: set[int] = set()
+            for pid in multiple_projects:
+                project_params = dict(params)
+                project_params["project_id"] = pid
+                raw = self._get("/issues.json", params=project_params)
+                for i in raw.get("issues", []):
+                    if i["id"] in seen_ids:
+                        continue
+                    seen_ids.add(i["id"])
+                    issues.append(self._issue_from_json(i))
+            issues.sort(key=lambda x: x.updated_on or "", reverse=True)
+        else:
+            raw = self._get("/issues.json", params=params)
+            issues = [self._issue_from_json(i) for i in raw.get("issues", [])]
 
         # Filtro client-side para múltiples asignados (OR lógico entre todos)
         if client_side_ids is not None:
@@ -469,6 +464,34 @@ class RedmineClient:
             issues = filtered
 
         return issues
+
+    @classmethod
+    def _issue_from_json(cls, i: dict) -> RedmineIssue:
+        """Convierte un dict de issue de la API Redmine en un RedmineIssue."""
+        return RedmineIssue(
+            id=i["id"],
+            subject=i.get("subject", ""),
+            description=i.get("description", ""),
+            start_date=i.get("start_date", ""),
+            due_date=i.get("due_date", ""),
+            status_name=i.get("status", {}).get("name", ""),
+            status_id=i.get("status", {}).get("id", 0),
+            done_ratio=i.get("done_ratio", 0),
+            project_id=i.get("project", {}).get("id", 0),
+            project_name=i.get("project", {}).get("name", ""),
+            assigned_to_id=i.get("assigned_to", {}).get("id", 0) if i.get("assigned_to") else 0,
+            assigned_to_name=i.get("assigned_to", {}).get("name", "") if i.get("assigned_to") else "",
+            author_name=i.get("author", {}).get("name", ""),
+            created_on=i.get("created_on", ""),
+            updated_on=i.get("updated_on", ""),
+            tracker_id=i.get("tracker", {}).get("id", 0),
+            tracker_name=i.get("tracker", {}).get("name", ""),
+            priority_id=i.get("priority", {}).get("id", 0),
+            priority_name=i.get("priority", {}).get("name", ""),
+            category_id=i.get("category", {}).get("id", 0),
+            category_name=i.get("category", {}).get("name", ""),
+            attachments=cls._parse_attachments(i.get("attachments", [])),
+        )
 
     @staticmethod
     def _parse_attachments(attachments_raw: list) -> list[RedmineAttachment]:
@@ -547,7 +570,7 @@ class RedmineClient:
         uploads = fields.pop("uploads", None)
         payload: dict[str, Any] = {"issue": fields}
         if uploads:
-            payload["uploads"] = uploads
+            payload["issue"]["uploads"] = uploads
         return self._put(f"/issues/{issue_id}.json", payload)
 
     def assign_issue(self, issue_id: int, user_id: int, notes: str = "") -> dict:

@@ -49,6 +49,7 @@ KEY_PROXY_PASSWORD = "proxy/password"
 KEY_THEME = "appearance/theme"
 KEY_FILTER_PROJECT = "filter/project_id"
 KEY_FILTER_PROJECT_NAME = "filter/project_name"
+KEY_FILTER_PROJECTS = "filter/projects"
 KEY_FILTER_FIXED = "filter/fixed"      # si el filtro de proyecto es persistente
 KEY_FILTER_STATUS = "filter/status"
 KEY_FILTER_PRIORITY = "filter/priority"
@@ -65,6 +66,7 @@ KEY_NOTIFICATIONS_POLL_INTERVAL = "notifications/poll_interval"
 KEY_FILTER_DATE_PRESET = "filter/date_preset"
 KEY_FILTER_DATE_FROM = "filter/date_from"
 KEY_FILTER_DATE_TO = "filter/date_to"
+KEY_COLUMNS_VISIBLE = "table/columns_visible"
 
 # ============================================================
 # Temas disponibles

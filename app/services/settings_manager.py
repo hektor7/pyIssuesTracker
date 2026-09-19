@@ -21,6 +21,7 @@ from app.utils.constants import (
     KEY_THEME,
     KEY_FILTER_PROJECT,
     KEY_FILTER_PROJECT_NAME,
+    KEY_FILTER_PROJECTS,
     KEY_FILTER_FIXED,
     KEY_FILTER_STATUS,
     KEY_WINDOW_GEOMETRY,
@@ -34,6 +35,7 @@ from app.utils.constants import (
     KEY_FILTER_DATE_PRESET,
     KEY_FILTER_DATE_FROM,
     KEY_FILTER_DATE_TO,
+    KEY_COLUMNS_VISIBLE,
     DEFAULT_REDMINE_URL,
     DEFAULT_API_KEY,
 )
@@ -208,6 +210,29 @@ class SettingsManager:
         self._settings.setValue(KEY_FILTER_FIXED, value)
 
     @property
+    def filter_projects(self) -> list[int]:
+        """Lista de proyectos filtrados (vacía = todos).
+
+        Con migración desde el valor legacy de un único proyecto.
+        """
+        raw = self._settings.value(KEY_FILTER_PROJECTS, "")
+        if raw:
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(parsed, list):
+                    return [int(p) for p in parsed if str(p).lstrip("-").isdigit()]
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # Fallback al valor legacy de un único proyecto
+        legacy = self.filter_project_id
+        return [legacy] if legacy else []
+
+    @filter_projects.setter
+    def filter_projects(self, value: list[int]):
+        clean = [int(v) for v in value if v]
+        self._settings.setValue(KEY_FILTER_PROJECTS, json.dumps(clean))
+
+    @property
     def filter_status(self) -> str:
         return self._settings.value(KEY_FILTER_STATUS, "open")
 
@@ -277,6 +302,26 @@ class SettingsManager:
     @filter_date_to.setter
     def filter_date_to(self, value: str):
         self._settings.setValue(KEY_FILTER_DATE_TO, value)
+
+    # ---- Tabla ----
+
+    @property
+    def visible_columns(self) -> list[str] | None:
+        """Claves de columnas visibles, o None si aún no se ha configurado."""
+        raw = self._settings.value(KEY_COLUMNS_VISIBLE, None)
+        if raw is None:
+            return None
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(parsed, list):
+                return [str(k) for k in parsed]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return None
+
+    @visible_columns.setter
+    def visible_columns(self, value: list[str]):
+        self._settings.setValue(KEY_COLUMNS_VISIBLE, json.dumps([str(k) for k in value]))
 
     # ---- Ventana ----
 

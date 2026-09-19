@@ -223,7 +223,6 @@ class TaskDialog(QDialog):
         self._comments_group = QGroupBox("Comentarios")
         comments_layout = QVBoxLayout(self._comments_group)
         self._comments_widget = CommentsWidget()
-        self._comments_widget.nota_agregada.connect(self._on_add_comment)
         if self._members:
             self._comments_widget.set_members(self._members)
         comments_layout.addWidget(self._comments_widget)
@@ -578,15 +577,6 @@ class TaskDialog(QDialog):
         self._comments_widget.set_comments(journals)
         self._comments_group.setVisible(True)
 
-    def _on_add_comment(self, text: str):
-        issue_id = self._task_data.get("id", 0)
-        if self._redmine and issue_id:
-            try:
-                self._redmine.add_issue_note(issue_id, text)
-                # No recargamos; el comentario se guardó en el servidor
-            except Exception:
-                QMessageBox.warning(self, "Error", "No se pudo añadir el comentario.")
-
     # ================================================================
     # Adjuntos
     # ================================================================
@@ -831,3 +821,8 @@ class TaskDialog(QDialog):
     def pending_checklist_items(self) -> list[str]:
         """Devuelve los items de checklist pendientes de crear (solo modo nueva tarea)."""
         return list(self._pending_checklist_items)
+
+    @property
+    def pending_comment(self) -> str:
+        """Devuelve el comentario pendiente escrito en el diálogo (vacío si no hay)."""
+        return self._comments_widget.pending_comment()

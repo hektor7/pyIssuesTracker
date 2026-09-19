@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from PyQt6.QtWidgets import QMainWindow, QDialog, QMessageBox
@@ -429,3 +430,176 @@ class TestEditarTareaValidationErrors:
         mock_td.assert_called_once()
         task_data = mock_td.call_args.kwargs["task_data"]
         assert task_data["assigned_to_id"] == 0
+
+
+class TestEditarTareaGuardaComentario:
+    """Al confirmar la edición, el comentario pendiente debe guardarse como nota."""
+
+    @pytest.fixture
+    def main_window(self, qapp):
+        with (
+            patch.object(MainWindow, "_setup_ui"),
+            patch.object(MainWindow, "_setup_menu"),
+            patch.object(MainWindow, "_setup_tray"),
+            patch.object(MainWindow, "_restore_window_state"),
+        ):
+            w = MainWindow()
+            w._redmine = MagicMock()
+            w._task_table = MagicMock()
+            w._filter_bar = MagicMock()
+            w._cargar_issues = MagicMock()
+            w._projects = []
+            w._trackers = []
+            w._priorities = []
+            w._statuses = []
+            w._current_user_id = 1
+            return w
+
+    def _setup_issue(self, main_window):
+        main_window._redmine.get_issue_with_journals.return_value = {
+            "id": 42,
+            "subject": "Test",
+            "description": "",
+            "project": {"id": 1},
+            "tracker": {"id": 1},
+            "priority": {"id": 2},
+            "category_id": 0,
+            "start_date": "",
+            "due_date": "",
+            "done_ratio": 0,
+            "status": {"id": 1},
+            "_journals": [],
+            "_attachments": [],
+        }
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+
+    def test_editar_tarea_guarda_comentario_pendiente(self, main_window):
+        """Si hay comentario pendiente, debe llamar a add_issue_note tras update_issue."""
+        self._setup_issue(main_window)
+        mock_dlg = MagicMock()
+        mock_dlg.exec.return_value = QDialog.DialogCode.Accepted
+        mock_dlg.project_id = 1
+        mock_dlg.subject = "Test"
+        mock_dlg.description = ""
+        mock_dlg.tracker_id = 1
+        mock_dlg.priority_id = 2
+        mock_dlg.category_id = 0
+        mock_dlg.assigned_to_id = 0
+        mock_dlg.start_date = ""
+        mock_dlg.due_date = ""
+        mock_dlg.due_enabled = False
+        mock_dlg.done_ratio = 0
+        mock_dlg.status_id = 1
+        mock_dlg.upload_tokens = []
+        mock_dlg.pending_comment = "Nuevo comentario"
+        mock_dlg.pending_checklist_items = []
+
+        with patch("app.main_window.TaskDialog", return_value=mock_dlg) as mock_td:
+            mock_td.DialogCode = QDialog.DialogCode
+            main_window._editar_tarea(42)
+
+        main_window._redmine.add_issue_note.assert_called_once_with(42, "Nuevo comentario")
+
+    def test_editar_tarea_sin_comentario_no_llama_add_note(self, main_window):
+        """Sin comentario pendiente, no debe llamar a add_issue_note."""
+        self._setup_issue(main_window)
+        mock_dlg = MagicMock()
+        mock_dlg.exec.return_value = QDialog.DialogCode.Accepted
+        mock_dlg.project_id = 1
+        mock_dlg.subject = "Test"
+        mock_dlg.description = ""
+        mock_dlg.tracker_id = 1
+        mock_dlg.priority_id = 2
+        mock_dlg.category_id = 0
+        mock_dlg.assigned_to_id = 0
+        mock_dlg.start_date = ""
+        mock_dlg.due_date = ""
+        mock_dlg.due_enabled = False
+        mock_dlg.done_ratio = 0
+        mock_dlg.status_id = 1
+        mock_dlg.upload_tokens = []
+        mock_dlg.pending_comment = ""
+
+        with patch("app.main_window.TaskDialog", return_value=mock_dlg) as mock_td:
+            mock_td.DialogCode = QDialog.DialogCode
+            main_window._editar_tarea(42)
+
+        main_window._redmine.add_issue_note.assert_not_called()
+
+
+class TestMultiProjectAgregacion:
+    """La agregación de categorías y miembros debe unir y deduplicar proyectos."""
+
+    def test_categorias_agregadas_y_deduplicadas(self, main_window):
+        c1 = SimpleNamespace(id=1, name="Bug")
+        c2 = SimpleNamespace(id=2, name="Feature")
+        c3 = SimpleNamespace(id=3, name="Soporte")
+        main_window._redmine.get_project_issue_categories.side_effect = [
+            [c1, c2], [c2, c3],
+        ]
+        main_window._cargar_categorias_proyecto([10, 20])
+        main_window._filter_bar.populate_categories.assert_called_once_with(
+            [(1, "Bug"), (2, "Feature"), (3, "Soporte")]
+        )
+        main_window._redmine.get_project_issue_categories.assert_any_call(10)
+        main_window._redmine.get_project_issue_categories.assert_any_call(20)
+
+    def test_miembros_agregados_y_deduplicados(self, main_window):
+        m1 = SimpleNamespace(user_id=1, user_name="Ana")
+        m2 = SimpleNamespace(user_id=2, user_name="Luis")
+        m3 = SimpleNamespace(user_id=1, user_name="Ana")
+        main_window._redmine.get_project_memberships.side_effect = [[m1, m2], [m3]]
+        main_window._cargar_miembros_proyecto([10, 20])
+        main_window._filter_bar.populate_assignees.assert_called_once_with(
+            [(1, "Ana"), (2, "Luis")]
+        )
+
+    def test_sin_proyectos_limpia_categorias(self, main_window):
+        main_window._cargar_categorias_proyecto([])
+        main_window._filter_bar.populate_categories.assert_called_once_with([])
+        main_window._redmine.get_project_issue_categories.assert_not_called()
+
+    def test_acepta_id_unico(self, main_window):
+        c = SimpleNamespace(id=1, name="Bug")
+        main_window._redmine.get_project_issue_categories.return_value = [c]
+        main_window._cargar_categorias_proyecto(10)
+        main_window._filter_bar.populate_categories.assert_called_once_with([(1, "Bug")])
+
+
+class TestFiltroFijadoPersistencia:
+    """Al activar 'Fijar filtro' debe persistir la lista de proyectos seleccionados."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self, main_window):
+        yield
+        s = main_window._settings._settings
+        s.remove("filter/projects")
+        s.remove("filter/fixed")
+
+    def test_activar_fija_proyectos(self, main_window):
+        main_window._filter_bar.selected_project_ids = [2, 3]
+        main_window._on_filter_fixed_changed(True)
+        assert main_window._settings.filter_fixed is True
+        assert main_window._settings.filter_projects == [2, 3]
+
+    def test_desactivar_no_borra_proyectos(self, main_window):
+        main_window._settings.filter_projects = [5]
+        main_window._on_filter_fixed_changed(False)
+        assert main_window._settings.filter_fixed is False
+        assert main_window._settings.filter_projects == [5]
+
+
+class TestOnColumnasCambiadas:
+    """Al cambiar columnas debe persistir la visibilidad y recargar datos."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self, main_window):
+        yield
+        main_window._settings._settings.remove("table/columns_visible")
+
+    def test_persiste_y_recarga(self, main_window):
+        main_window._task_table.visible_column_keys.return_value = ["id", "project", "title"]
+        main_window._on_columnas_cambiadas()
+        assert main_window._settings.visible_columns == ["id", "project", "title"]
+        main_window._cargar_issues.assert_called_once()

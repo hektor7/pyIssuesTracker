@@ -1,8 +1,7 @@
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTextBrowser,
-    QPlainTextEdit, QPushButton, QScrollArea,
-    QFrame, QSizePolicy, QHBoxLayout,
+    QPlainTextEdit, QScrollArea, QFrame, QSizePolicy,
 )
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QCompleter
@@ -10,8 +9,6 @@ from PyQt6.QtWidgets import QCompleter
 
 class CommentsWidget(QWidget):
     """Widget para mostrar comentarios existentes y añadir nuevos."""
-
-    nota_agregada = pyqtSignal(str)  # Emite el texto de la nueva nota
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -58,13 +55,9 @@ class CommentsWidget(QWidget):
         self._note_edit.setTabChangesFocus(True)
         main_layout.addWidget(self._note_edit)
 
-        # Botón añadir
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        self._add_btn = QPushButton("Añadir comentario")
-        self._add_btn.clicked.connect(self._on_add_note)
-        btn_layout.addWidget(self._add_btn)
-        main_layout.addLayout(btn_layout)
+    def pending_comment(self) -> str:
+        """Devuelve el texto del comentario pendiente (sin espacios al inicio/fin)."""
+        return self._note_edit.toPlainText().strip()
 
     @staticmethod
     def _journal_get(j, key: str, default: str = ""):
@@ -120,12 +113,6 @@ class CommentsWidget(QWidget):
                 self._comments_layout.addWidget(frame)
 
         self._comments_layout.addStretch()
-
-    def _on_add_note(self):
-        text = self._note_edit.toPlainText().strip()
-        if text:
-            self.nota_agregada.emit(text)
-            self._note_edit.clear()
 
     def set_members(self, members: list[tuple[int, str]]):
         """Configura el autocompletado @usuario con los miembros del proyecto."""

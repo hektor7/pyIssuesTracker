@@ -10,7 +10,7 @@ from app.widgets.multi_select_combo import MultiSelectCombo
 
 
 class FilterBar(QWidget):
-    proyecto_cambiado = pyqtSignal(int, str)
+    proyecto_cambiado = pyqtSignal(list)  # lista de IDs de proyecto seleccionados
     estado_cambiado = pyqtSignal(str)
     prioridad_cambiada = pyqtSignal(int)
     categoria_cambiada = pyqtSignal(int)
@@ -22,7 +22,6 @@ class FilterBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._projects: list[tuple[int, str]] = []
-        self._project_lookup: dict[int, str] = {}
         self._current_date_from: str | None = None
         self._current_date_to: str | None = None
         main_layout = QVBoxLayout(self)
@@ -35,19 +34,12 @@ class FilterBar(QWidget):
 
         row1.addWidget(QLabel("Proyecto:"))
 
-        self._project_combo = QComboBox()
-        self._project_combo.setEditable(True)
-        self._project_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self._project_combo.setMinimumWidth(220)
-        self._project_combo.setMaxVisibleItems(20)
-        self._project_combo.currentIndexChanged.connect(self._on_project_selected)
-        self._project_combo.lineEdit().returnPressed.connect(self._on_enter_pressed)
+        self._project_combo = MultiSelectCombo()
+        self._project_combo.set_fixed_options([
+            (MultiSelectCombo.ALL, "Todos los proyectos"),
+        ])
+        self._project_combo.seleccion_cambiada.connect(self._on_projects_changed)
         row1.addWidget(self._project_combo)
-
-        self._completer = QCompleter([], self)
-        self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        self._project_combo.setCompleter(self._completer)
 
         self._fixed_checkbox = QCheckBox("Fijar filtro")
         self._fixed_checkbox.setToolTip("Mantener este filtro de proyecto al reiniciar la aplicación")
@@ -154,11 +146,8 @@ class FilterBar(QWidget):
 
     def populate_projects(self, projects: list[tuple[int, str]], hierarchy: dict[int, int | None] | None = None):
         self._projects = projects
-        self._project_lookup = {pid: name for pid, name in projects}
-        self._project_combo.blockSignals(True)
-        self._project_combo.clear()
-        self._project_combo.addItem("(Todos los proyectos)", 0)
-        names = []
+        # Mostrar jerarquía con indentación en el nombre visible
+        items: list[tuple[int, str]] = []
         for pid, name in projects:
             indent = ""
             if hierarchy:
@@ -168,24 +157,15 @@ class FilterBar(QWidget):
                     depth += 1
                     parent = hierarchy.get(parent)
                 indent = "  " * depth
-            display = f"{indent}{name}"
-            self._project_combo.addItem(display, pid)
-            self._project_combo.setItemData(self._project_combo.count() - 1, name, Qt.ItemDataRole.ToolTipRole)
-            names.append(name)
-        self._completer.model().setStringList(names)
-        self._project_combo.blockSignals(False)
+            items.append((pid, f"{indent}{name}"))
+        self._project_combo.set_items(items)
 
-    def select_project(self, project_id: int, project_name: str):
-        for i in range(self._project_combo.count()):
-            if self._project_combo.itemData(i) == project_id:
-                self._project_combo.blockSignals(True)
-                self._project_combo.setCurrentIndex(i)
-                self._project_combo.blockSignals(False)
-                return
-        if project_name:
-            self._project_combo.blockSignals(True)
-            self._project_combo.setCurrentText(project_name)
-            self._project_combo.blockSignals(False)
+    def select_projects(self, project_ids: list[int]):
+        """Selecciona los proyectos dados (lista vacía o [0] → Todos)."""
+        if not project_ids or project_ids == [0]:
+            self._project_combo.set_selected_ids([MultiSelectCombo.ALL])
+        else:
+            self._project_combo.set_selected_ids(project_ids)
 
     def populate_priorities(self, priorities: list[tuple[int, str]]):
         self._priority_combo.blockSignals(True)
@@ -245,13 +225,18 @@ class FilterBar(QWidget):
         self._fixed_checkbox.setChecked(fixed)
 
     @property
-    def selected_project_id(self) -> int:
-        data = self._project_combo.currentData()
-        return data if data is not None else 0
+    def selected_project_ids(self) -> list[int]:
+        """Devuelve la lista de proyectos seleccionados (vacía si 'Todos')."""
+        ids = self._project_combo.selected_ids()
+        if MultiSelectCombo.ALL in ids:
+            return []
+        return ids
 
     @property
-    def selected_project_name(self) -> str:
-        return self._project_lookup.get(self.selected_project_id, "")
+    def selected_project_id(self) -> int:
+        """Primer proyecto seleccionado, o 0 si no hay ninguno/Todos."""
+        ids = self.selected_project_ids
+        return ids[0] if ids else 0
 
     @property
     def selected_status(self) -> str:
@@ -313,23 +298,8 @@ class FilterBar(QWidget):
                 self._date_to_edit.setDate(dt)
             self._update_date_filter(date_from, date_to)
 
-    def _on_project_selected(self, index: int):
-        if index < 0:
-            return
-        pid = self._project_combo.itemData(index) or 0
-        name = self._project_lookup.get(pid, "")
-        self.proyecto_cambiado.emit(pid, name)
-
-    def _on_enter_pressed(self):
-        text = self._project_combo.currentText().strip().lower()
-        for i in range(self._project_combo.count()):
-            if self._project_combo.itemText(i).lower() == text:
-                self._project_combo.setCurrentIndex(i)
-                return
-        for i, (pid, name) in enumerate(self._projects):
-            if text in name.lower():
-                self._project_combo.setCurrentIndex(i + 1)
-                return
+    def _on_projects_changed(self, selected: list):
+        self.proyecto_cambiado.emit(selected)
 
     def _on_status_changed(self, index: int):
         status = self._status_combo.currentData() or "open"

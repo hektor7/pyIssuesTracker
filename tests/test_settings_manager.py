@@ -87,3 +87,71 @@ class TestNotificationsProperties:
         settings._settings.setValue("notifications/poll_interval", "abc")
         s2 = SettingsManager()
         assert s2.poll_interval_minutes == 5
+
+
+class TestFilterProjects:
+    """Tests para la lista de proyectos filtrados y su migración legacy."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self):
+        """Limpia las claves de filtro de proyecto antes y despues de cada test."""
+        s = SettingsManager()
+        s._settings.remove("filter/projects")
+        s._settings.remove("filter/project_id")
+        s._settings.remove("filter/project_name")
+        yield
+        s2 = SettingsManager()
+        s2._settings.remove("filter/projects")
+        s2._settings.remove("filter/project_id")
+        s2._settings.remove("filter/project_name")
+
+    def test_default_empty(self, settings):
+        assert settings.filter_projects == []
+
+    def test_roundtrip(self, settings):
+        settings.filter_projects = [1, 2, 3]
+        s2 = SettingsManager()
+        assert s2.filter_projects == [1, 2, 3]
+
+    def test_empty_list_roundtrip(self, settings):
+        settings.filter_projects = [1, 2]
+        settings.filter_projects = []
+        s2 = SettingsManager()
+        assert s2.filter_projects == []
+
+    def test_migration_from_legacy(self, settings):
+        """Sin clave lista, debe migrar desde filter/project_id."""
+        settings.filter_project_id = 5
+        s2 = SettingsManager()
+        assert s2.filter_projects == [5]
+
+    def test_legacy_zero_means_empty(self, settings):
+        settings.filter_project_id = 0
+        s2 = SettingsManager()
+        assert s2.filter_projects == []
+
+
+class TestVisibleColumns:
+    """Tests para la persistencia de la visibilidad de columnas."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self):
+        s = SettingsManager()
+        s._settings.remove("table/columns_visible")
+        yield
+        s2 = SettingsManager()
+        s2._settings.remove("table/columns_visible")
+
+    def test_unset_returns_none(self, settings):
+        assert settings.visible_columns is None
+
+    def test_roundtrip(self, settings):
+        settings.visible_columns = ["id", "title", "project"]
+        s2 = SettingsManager()
+        assert s2.visible_columns == ["id", "title", "project"]
+
+    def test_empty_list_roundtrip(self, settings):
+        settings.visible_columns = ["id"]
+        settings.visible_columns = []
+        s2 = SettingsManager()
+        assert s2.visible_columns == []

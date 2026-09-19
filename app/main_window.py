@@ -95,7 +95,12 @@ class MainWindow(QMainWindow):
         self._task_table.tarea_abrir_url.connect(self._abrir_url_redmine)
         self._task_table.cambio_rapido.connect(self._on_cambio_rapido)
         self._task_table.due_date_cambiada.connect(self._on_due_date_changed)
+        self._task_table.columnas_cambiadas.connect(self._on_columnas_cambiadas)
         layout.addWidget(self._task_table)
+
+        # Restaurar visibilidad de columnas persistida
+        if self._settings.visible_columns is not None:
+            self._task_table.apply_visible_column_keys(self._settings.visible_columns)
 
         self._status_indicator = StatusIndicator()
         self._status_indicator.setObjectName("status_indicator")
@@ -293,13 +298,10 @@ class MainWindow(QMainWindow):
             self._project_hierarchy = {p.id: p.parent_id for p in projects}
             self._filter_bar.populate_projects(self._projects, self._project_hierarchy)
 
-            if self._settings.filter_fixed and self._settings.filter_project_id:
-                self._filter_bar.select_project(
-                    self._settings.filter_project_id,
-                    self._settings.filter_project_name,
-                )
-                self._cargar_categorias_proyecto(self._settings.filter_project_id)
-                self._cargar_miembros_proyecto(self._settings.filter_project_id)
+            if self._settings.filter_fixed and self._settings.filter_projects:
+                self._filter_bar.select_projects(self._settings.filter_projects)
+                self._cargar_categorias_proyecto(self._settings.filter_projects)
+                self._cargar_miembros_proyecto(self._settings.filter_projects)
             self._filter_bar.set_fixed(self._settings.filter_fixed)
             self._filter_bar.set_status(self._settings.filter_status)
             self._filter_bar.set_priority(self._settings.filter_priority)
@@ -343,32 +345,54 @@ class MainWindow(QMainWindow):
         except RedmineError:
             self._trackers = []
 
-    def _cargar_categorias_proyecto(self, project_id: int):
-        if not self._redmine or not project_id:
+    def _cargar_categorias_proyecto(self, project_ids):
+        if isinstance(project_ids, int):
+            project_ids = [project_ids] if project_ids else []
+        if not self._redmine:
             self._filter_bar.populate_categories([])
             return
-        try:
-            cats = self._redmine.get_project_issue_categories(project_id)
-            categories = [(c.id, c.name) for c in cats]
-            self._filter_bar.populate_categories(categories)
-        except RedmineError:
-            self._filter_bar.populate_categories([])
+        categories: list[tuple[int, str]] = []
+        for pid in project_ids:
+            try:
+                cats = self._redmine.get_project_issue_categories(pid)
+                categories.extend([(c.id, c.name) for c in cats])
+            except RedmineError:
+                continue
+        # Dedupe por id de categoría
+        seen = set()
+        unique: list[tuple[int, str]] = []
+        for cid, cname in categories:
+            if cid not in seen:
+                seen.add(cid)
+                unique.append((cid, cname))
+        self._filter_bar.populate_categories(unique)
 
-    def _cargar_miembros_proyecto(self, project_id: int):
-        if not self._redmine or not project_id:
+    def _cargar_miembros_proyecto(self, project_ids):
+        if isinstance(project_ids, int):
+            project_ids = [project_ids] if project_ids else []
+        if not self._redmine:
             self._filter_bar.populate_assignees([])
             return
-        try:
-            mbs = self._redmine.get_project_memberships(project_id)
-            assignees = [(m.user_id, m.user_name) for m in mbs if m.user_id]
-            self._filter_bar.populate_assignees(assignees)
-        except RedmineError:
-            self._filter_bar.populate_assignees([])
+        members: list[tuple[int, str]] = []
+        for pid in project_ids:
+            try:
+                mbs = self._redmine.get_project_memberships(pid)
+                members.extend([(m.user_id, m.user_name) for m in mbs if m.user_id])
+            except RedmineError:
+                continue
+        # Dedupe por id de usuario
+        seen = set()
+        unique: list[tuple[int, str]] = []
+        for mid, mname in members:
+            if mid not in seen:
+                seen.add(mid)
+                unique.append((mid, mname))
+        self._filter_bar.populate_assignees(unique)
 
     def _cargar_issues(self, *, track_known: bool = True):
         if not self._redmine:
             return
-        project_id = self._filter_bar.selected_project_id or None
+        project_ids = self._filter_bar.selected_project_ids
         status_filter = self._filter_bar.selected_status
         priority_id = self._filter_bar.selected_priority or None
         category_id = self._filter_bar.selected_category or None
@@ -391,7 +415,7 @@ class MainWindow(QMainWindow):
 
         try:
             issues = self._redmine.get_issues(
-                project_id=project_id,
+                project_id=project_ids or None,
                 status_filter=status_filter,
                 category_id=category_id,
                 priority_id=priority_id,
@@ -417,6 +441,7 @@ class MainWindow(QMainWindow):
                     "author_name": iss.author_name,
                     "tracker_name": iss.tracker_name,
                     "priority_name": iss.priority_name,
+                    "category_name": iss.category_name,
                     "created_on": iss.created_on,
                     "updated_on": iss.updated_on,
                     "url": urljoin(self._settings.redmine_url.rstrip("/") + "/", f"issues/{iss.id}"),
@@ -431,7 +456,13 @@ class MainWindow(QMainWindow):
             self._update_task_table_context()
             self._status_indicator.set_connected(True)
             if track_known:
-                self._known_issue_ids[project_id] = {iss["id"] for iss in issues_dict}
+                if project_ids:
+                    for pid in project_ids:
+                        self._known_issue_ids[pid] = {
+                            iss["id"] for iss in issues_dict if iss.get("project_id") == pid
+                        }
+                else:
+                    self._known_issue_ids[None] = {iss["id"] for iss in issues_dict}
         except RedmineError as e:
             self._status_indicator.set_connected(False, str(e))
 
@@ -590,6 +621,8 @@ class MainWindow(QMainWindow):
                     status_id=dlg.status_id if dlg.status_id else None,
                     uploads=dlg.upload_tokens or None,
                 )
+                if dlg.pending_comment:
+                    self._redmine.add_issue_note(issue_id, dlg.pending_comment)
                 self._cargar_issues()
         except RedmineValidationError as e:
             errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
@@ -744,16 +777,20 @@ class MainWindow(QMainWindow):
         except RedmineError as e:
             QMessageBox.warning(self, "Error", f"No se pudo actualizar la fecha de fin:\n{str(e)}")
 
+    def _on_columnas_cambiadas(self):
+        """Persiste la visibilidad de columnas y recarga los datos."""
+        self._settings.visible_columns = self._task_table.visible_column_keys()
+        self._cargar_issues()
+
     # ================================================================
     # Filtros
     # ================================================================
 
-    def _on_filter_project_changed(self, project_id: int, project_name: str):
+    def _on_filter_project_changed(self, project_ids: list):
         if self._settings.filter_fixed:
-            self._settings.filter_project_id = project_id
-            self._settings.filter_project_name = project_name
-        self._cargar_categorias_proyecto(project_id)
-        self._cargar_miembros_proyecto(project_id)
+            self._settings.filter_projects = project_ids
+        self._cargar_categorias_proyecto(project_ids)
+        self._cargar_miembros_proyecto(project_ids)
         self._cargar_issues()
         self._update_poll_timer()
 
@@ -776,8 +813,7 @@ class MainWindow(QMainWindow):
     def _on_filter_fixed_changed(self, fixed: bool):
         self._settings.filter_fixed = fixed
         if fixed:
-            self._settings.filter_project_id = self._filter_bar.selected_project_id
-            self._settings.filter_project_name = self._filter_bar.selected_project_name
+            self._settings.filter_projects = self._filter_bar.selected_project_ids
 
     def _on_busqueda_cambiada(self, text: str):
         self._search_text = text.strip()
@@ -791,7 +827,7 @@ class MainWindow(QMainWindow):
 
     def _update_poll_timer(self):
         subscribed = self._settings.notifications_projects
-        has_projects = bool(self._filter_bar.selected_project_id) or bool(subscribed)
+        has_projects = bool(self._filter_bar.selected_project_ids) or bool(subscribed)
         if has_projects and self._redmine:
             interval_ms = self._settings.poll_interval_minutes * 60000
             self._poll_timer.start(interval_ms)
@@ -806,10 +842,9 @@ class MainWindow(QMainWindow):
         if subscribed:
             project_ids = subscribed
         else:
-            pid = self._filter_bar.selected_project_id
-            if not pid:
+            project_ids = self._filter_bar.selected_project_ids
+            if not project_ids:
                 return
-            project_ids = [pid]
 
         assigned_only = self._settings.notifications_assigned_only
         assigned_to = "me" if assigned_only else None
@@ -833,7 +868,7 @@ class MainWindow(QMainWindow):
 
         if all_new_issues and self._settings.notifications_enabled:
             self._notify_new_issues(all_new_issues)
-        if self._filter_bar.selected_project_id:
+        if self._filter_bar.selected_project_ids:
             self._cargar_issues(track_known=False)
 
     def _notify_new_issues(self, new_issues: list):

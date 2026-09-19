@@ -39,20 +39,49 @@ class TaskTable(QTableWidget):
     tarea_abrir_url = pyqtSignal(int, str)
     cambio_rapido = pyqtSignal(int, str, int)  # issue_id, tipo, valor
     due_date_cambiada = pyqtSignal(int, str)  # issue_id, due_date
+    columnas_cambiadas = pyqtSignal()  # visibilidad de columnas modificada
 
     COL_ID = 0
     COL_TRACKER = 1
-    COL_TITLE = 2
-    COL_START_DATE = 3
-    COL_DUE_DATE = 4
-    COL_STATUS = 5
-    COL_ASSIGNED_TO = 6
-    COL_PROGRESS = 7
-    COL_URL = 8
-    COL_CREATED = 9
-    COL_UPDATED = 10
+    COL_PROJECT = 2
+    COL_TITLE = 3
+    COL_START_DATE = 4
+    COL_DUE_DATE = 5
+    COL_PRIORITY = 6
+    COL_STATUS = 7
+    COL_ASSIGNED_TO = 8
+    COL_CATEGORY = 9
+    COL_PROGRESS = 10
+    COL_URL = 11
+    COL_CREATED = 12
+    COL_UPDATED = 13
 
-    HEADERS = ["ID", "Tracker", "Título", "Fecha inicio", "Fecha fin", "Estado", "Asignado a", "Progreso %", "", "Creado", "Modificado"]
+    HEADERS = [
+        "ID", "Tracker", "Proyecto", "Título", "Fecha inicio", "Fecha fin",
+        "Prioridad", "Estado", "Asignado a", "Categoría", "Progreso %", "",
+        "Creado", "Modificado",
+    ]
+
+    # Columnas ocultas por defecto
+    HIDDEN_BY_DEFAULT = {COL_PROJECT, COL_PRIORITY, COL_CATEGORY}
+
+    # Claves estables para persistir la visibilidad de columnas
+    COLUMN_KEYS = {
+        COL_ID: "id",
+        COL_TRACKER: "tracker",
+        COL_PROJECT: "project",
+        COL_TITLE: "title",
+        COL_START_DATE: "start_date",
+        COL_DUE_DATE: "due_date",
+        COL_PRIORITY: "priority",
+        COL_STATUS: "status",
+        COL_ASSIGNED_TO: "assigned_to",
+        COL_CATEGORY: "category",
+        COL_PROGRESS: "progress",
+        COL_URL: "url",
+        COL_CREATED: "created",
+        COL_UPDATED: "updated",
+    }
 
     _BG_INMEDIATA = QColor(200, 0, 0)
     _BG_URGENTE = QColor(180, 20, 20)
@@ -74,16 +103,27 @@ class TaskTable(QTableWidget):
         header.setStretchLastSection(False)
         header.setSectionResizeMode(self.COL_ID, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_TRACKER, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self.COL_PROJECT, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_TITLE, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(self.COL_START_DATE, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_DUE_DATE, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self.COL_PRIORITY, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_STATUS, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_ASSIGNED_TO, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self.COL_CATEGORY, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_PROGRESS, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_URL, QHeaderView.ResizeMode.Fixed)
         header.resizeSection(self.COL_URL, 40)
         header.setSectionResizeMode(self.COL_CREATED, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_UPDATED, QHeaderView.ResizeMode.ResizeToContents)
+
+        # Ocultar las columnas opcionales por defecto
+        for col in self.HIDDEN_BY_DEFAULT:
+            self.setColumnHidden(col, True)
+
+        # Menú contextual sobre las cabeceras para mostrar/ocultar columnas
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._show_column_menu)
 
         self.cellDoubleClicked.connect(self._on_double_click)
         self._issues: list[dict] = []
@@ -212,6 +252,40 @@ class TaskTable(QTableWidget):
                 self.removeCellWidget(row, self.COL_DUE_DATE)
                 self.setItem(row, self.COL_DUE_DATE, due_item)
                 break
+
+    def _show_column_menu(self, pos: QPoint):
+        """Muestra el menú contextual de cabeceras para mostrar/ocultar columnas."""
+        menu = QMenu(self)
+        for col in range(self.columnCount()):
+            label = self._column_label(col)
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(not self.isColumnHidden(col))
+            action.triggered.connect(lambda checked, c=col: self._toggle_column(c, checked))
+        menu.exec(self.horizontalHeader().viewport().mapToGlobal(pos))
+
+    def _column_label(self, col: int) -> str:
+        if col == self.COL_URL:
+            return "Abrir en Redmine"
+        return self.HEADERS[col]
+
+    def _toggle_column(self, col: int, visible: bool):
+        self.setColumnHidden(col, not visible)
+        self.columnas_cambiadas.emit()
+
+    def visible_column_keys(self) -> list[str]:
+        """Devuelve las claves de las columnas visibles en este momento."""
+        return [
+            self.COLUMN_KEYS[col]
+            for col in range(self.columnCount())
+            if not self.isColumnHidden(col)
+        ]
+
+    def apply_visible_column_keys(self, keys: list[str]):
+        """Aplica la visibilidad de columnas desde una lista de claves persistidas."""
+        keyset = set(keys or [])
+        for col in range(self.columnCount()):
+            self.setColumnHidden(col, self.COLUMN_KEYS.get(col) not in keyset)
 
     def _show_context_menu(self, pos: QPoint):
         row = self.rowAt(pos.y())
@@ -423,6 +497,13 @@ class TaskTable(QTableWidget):
                 tracker_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_TRACKER, tracker_item)
 
+            project_item = QTableWidgetItem(issue.get("project_name", ""))
+            project_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if bg_color:
+                project_item.setBackground(bg_color)
+                project_item.setForeground(Qt.GlobalColor.white)
+            self.setItem(row, self.COL_PROJECT, project_item)
+
             title_item = QTableWidgetItem(issue.get("subject", ""))
             title_item.setToolTip(
                 f"<b>{issue.get('tracker_name', '')} #{issue['id']}</b>: {issue.get('subject', '')}<br><br>"
@@ -453,6 +534,13 @@ class TaskTable(QTableWidget):
                 due_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_DUE_DATE, due_item)
 
+            priority_item = QTableWidgetItem(issue.get("priority_name", ""))
+            priority_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if bg_color:
+                priority_item.setBackground(bg_color)
+                priority_item.setForeground(Qt.GlobalColor.white)
+            self.setItem(row, self.COL_PRIORITY, priority_item)
+
             status_item = QTableWidgetItem(issue.get("status_name", ""))
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if bg_color:
@@ -466,6 +554,13 @@ class TaskTable(QTableWidget):
                 assigned_item.setBackground(bg_color)
                 assigned_item.setForeground(Qt.GlobalColor.white)
             self.setItem(row, self.COL_ASSIGNED_TO, assigned_item)
+
+            category_item = QTableWidgetItem(issue.get("category_name", ""))
+            category_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if bg_color:
+                category_item.setBackground(bg_color)
+                category_item.setForeground(Qt.GlobalColor.white)
+            self.setItem(row, self.COL_CATEGORY, category_item)
 
             progress = issue.get("done_ratio", 0)
             # Item dummy para ordenación numérica

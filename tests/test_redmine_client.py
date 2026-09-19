@@ -15,6 +15,32 @@ def client():
     return c
 
 
+class TestUpdateIssue:
+    def test_update_issue_without_uploads(self, client):
+        """update_issue sin uploads no debe incluir el campo uploads."""
+        client.update_issue(issue_id=42, subject="Nuevo asunto")
+        client._put.assert_called_once_with(
+            "/issues/42.json", {"issue": {"subject": "Nuevo asunto"}}
+        )
+
+    def test_update_issue_with_uploads_inside_issue(self, client):
+        """update_issue con uploads debe enviarlos dentro del objeto issue."""
+        uploads = [{"token": "abc123", "filename": "doc.pdf", "content_type": "application/pdf"}]
+        client.update_issue(issue_id=42, subject="Nuevo asunto", uploads=uploads)
+        client._put.assert_called_once_with(
+            "/issues/42.json",
+            {"issue": {"subject": "Nuevo asunto", "uploads": uploads}},
+        )
+
+    def test_update_issue_with_only_uploads(self, client):
+        """update_issue solo con uploads debe enviarlos dentro del objeto issue."""
+        uploads = [{"token": "tok", "filename": "f.txt", "content_type": "text/plain"}]
+        client.update_issue(issue_id=42, uploads=uploads)
+        client._put.assert_called_once_with(
+            "/issues/42.json", {"issue": {"uploads": uploads}}
+        )
+
+
 class TestAssignIssue:
     def test_assign_issue_without_notes(self, client):
         """assign_issue sin notas debe pasar solo assigned_to_id."""
@@ -64,6 +90,80 @@ class TestCompleteIssue:
             "/issues/42.json",
             {"issue": {"done_ratio": 100, "status_id": 5, "due_date": "2026-06-12"}},
         )
+
+
+class TestGetIssuesMultiProject:
+    """get_issues debe soportar una lista de proyectos fusionando resultados."""
+
+    @staticmethod
+    def _issue_json(iid, project_id, updated_on):
+        return {
+            "id": iid,
+            "subject": f"Issue {iid}",
+            "project": {"id": project_id, "name": f"Proyecto {project_id}"},
+            "status": {"id": 1, "name": "Abierta"},
+            "updated_on": updated_on,
+        }
+
+    def test_single_int_project(self, client):
+        """Un único proyecto como int se pasa directamente a la API."""
+        client._get = MagicMock(return_value={"issues": []})
+        client.get_issues(project_id=5)
+        client._get.assert_called_once()
+        _, kwargs = client._get.call_args
+        assert kwargs["params"]["project_id"] == 5
+
+    def test_list_of_one_scales_to_int(self, client):
+        """Una lista con un solo proyecto debe escalarse a int."""
+        client._get = MagicMock(return_value={"issues": []})
+        client.get_issues(project_id=[5])
+        client._get.assert_called_once()
+        _, kwargs = client._get.call_args
+        assert kwargs["params"]["project_id"] == 5
+
+    def test_empty_list_means_no_project_filter(self, client):
+        """Una lista vacía no debe filtrar por proyecto."""
+        client._get = MagicMock(return_value={"issues": []})
+        client.get_issues(project_id=[])
+        client._get.assert_called_once()
+        _, kwargs = client._get.call_args
+        assert "project_id" not in kwargs["params"]
+
+    def test_multiple_projects_merge_and_dedupe(self, client):
+        """Con varios proyectos hace una llamada por proyecto y fusiona sin duplicados."""
+        p1 = [self._issue_json(1, 1, "2026-09-01T10:00:00Z"),
+              self._issue_json(2, 1, "2026-09-02T10:00:00Z")]
+        p2 = [self._issue_json(2, 1, "2026-09-02T10:00:00Z"),  # duplicado
+              self._issue_json(3, 2, "2026-09-03T10:00:00Z")]
+        client._get = MagicMock(side_effect=[{"issues": p1}, {"issues": p2}])
+
+        result = client.get_issues(project_id=[1, 2])
+
+        assert client._get.call_count == 2
+        ids = [iss.id for iss in result]
+        assert ids == [3, 2, 1]  # orden por updated_on desc, sin duplicados
+
+    def test_multiple_projects_pass_project_id_per_call(self, client):
+        """Cada llamada debe incluir el project_id correspondiente."""
+        client._get = MagicMock(return_value={"issues": []})
+        client.get_issues(project_id=[1, 2, 3])
+        pids = [call.kwargs["params"]["project_id"] for call in client._get.call_args_list]
+        assert pids == [1, 2, 3]
+
+    def test_multiple_projects_with_client_side_assigned_filter(self, client):
+        """El filtro client-side de asignados debe aplicarse tras fusionar proyectos."""
+        p1 = [self._issue_json(1, 1, "2026-09-01T10:00:00Z"),
+              {"id": 2, "subject": "I2", "project": {"id": 1, "name": "P1"},
+               "status": {"id": 1, "name": "Abierta"}, "updated_on": "2026-09-02T10:00:00Z",
+               "assigned_to": {"id": 7, "name": "Ana"}}]
+        p2 = [{"id": 3, "subject": "I3", "project": {"id": 2, "name": "P2"},
+               "status": {"id": 1, "name": "Abierta"}, "updated_on": "2026-09-03T10:00:00Z",
+               "assigned_to": {"id": 9, "name": "Luis"}}]
+        client._get = MagicMock(side_effect=[{"issues": p1}, {"issues": p2}])
+
+        result = client.get_issues(project_id=[1, 2], assigned_to_id=[7, 9], current_user_id=1)
+
+        assert sorted(iss.id for iss in result) == [2, 3]
 
 
 class TestParseAttachments:

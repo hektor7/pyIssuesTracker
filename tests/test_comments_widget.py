@@ -69,6 +69,29 @@ class TestSetComments:
         # No debe lanzar excepción
 
 
+class TestPendingComment:
+    """pending_comment debe devolver el texto del editor sin espacios extra."""
+
+    def test_returns_empty_when_blank(self, qapp):
+        widget = CommentsWidget()
+        assert widget.pending_comment() == ""
+
+    def test_returns_trimmed_text(self, qapp):
+        widget = CommentsWidget()
+        widget._note_edit.setPlainText("  nuevo comentario  ")
+        assert widget.pending_comment() == "nuevo comentario"
+
+    def test_keeps_whitespace_only_as_empty(self, qapp):
+        widget = CommentsWidget()
+        widget._note_edit.setPlainText("   \n  ")
+        assert widget.pending_comment() == ""
+
+    def test_no_add_button(self, qapp):
+        """El botón 'Añadir comentario' debe haber sido eliminado."""
+        widget = CommentsWidget()
+        assert not hasattr(widget, "_add_btn")
+
+
 class TestMentionCompleterLifecycle:
     """El completer debe manejar correctamente su ciclo de vida."""
 

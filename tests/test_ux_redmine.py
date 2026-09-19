@@ -314,7 +314,7 @@ class TestTaskTableDueDateColumn:
     def test_task_table_has_due_date_column(self, qapp):
         """TaskTable debe tener COL_DUE_DATE y cabecera 'Fecha fin'."""
         table = TaskTable()
-        assert table.COL_DUE_DATE == 4
+        assert table.COL_DUE_DATE == 5
         assert table.HEADERS[table.COL_DUE_DATE] == "Fecha fin"
 
     def test_due_date_column_shows_data(self, qapp):

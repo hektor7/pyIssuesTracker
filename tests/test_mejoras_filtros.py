@@ -143,6 +143,43 @@ class TestExistingDateFunctions:
 # ──────────────────────────────────────────────────────────────────────
 
 from app.widgets.multi_select_combo import MultiSelectCombo
+from app.widgets.filter_bar import FilterBar
+
+
+class TestFilterBarMultiProject:
+    """El filtro de proyecto debe soportar selección múltiple."""
+
+    def test_default_all_projects(self, qapp):
+        fb = FilterBar()
+        fb.populate_projects([(1, "Proyecto A"), (2, "Proyecto B")])
+        assert fb.selected_project_ids == []
+
+    def test_select_multiple_projects(self, qapp):
+        fb = FilterBar()
+        fb.populate_projects([(1, "Proyecto A"), (2, "Proyecto B"), (3, "Proyecto C")])
+        fb.select_projects([2, 3])
+        assert fb.selected_project_ids == [2, 3]
+        assert fb.selected_project_id == 2  # primero seleccionado
+
+    def test_select_projects_zero_resets_to_all(self, qapp):
+        fb = FilterBar()
+        fb.populate_projects([(1, "A"), (2, "B")])
+        fb.select_projects([0])
+        assert fb.selected_project_ids == []
+
+    def test_select_projects_empty_resets_to_all(self, qapp):
+        fb = FilterBar()
+        fb.populate_projects([(1, "A"), (2, "B")])
+        fb.select_projects([])
+        assert fb.selected_project_ids == []
+
+    def test_signal_emits_list(self, qapp):
+        fb = FilterBar()
+        fb.populate_projects([(1, "A"), (2, "B"), (3, "C")])
+        received = []
+        fb.proyecto_cambiado.connect(lambda ids: received.append(ids))
+        fb.select_projects([1, 3])
+        assert received and received[-1] == [1, 3]
 
 
 class TestMultiSelectCombo:
