@@ -1,15 +1,19 @@
 import httpx
+import mimetypes
+import os
 import subprocess
+import tempfile
 import webbrowser
 from datetime import date
 
 from urllib.parse import urljoin
 
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtCore import QTimer, QUrl
 from PyQt6.QtGui import QAction, QDesktopServices
 from PyQt6.QtWidgets import (
     QMainWindow, QVBoxLayout, QWidget, QStatusBar,
     QMessageBox, QMenuBar, QMenu, QApplication,
+    QDialog, QLabel, QDialogButtonBox,
 )
 
 from app import __version__
@@ -30,6 +34,38 @@ from app.dialogs.assign_dialog import AssignDialog
 from app.dialogs.complete_dialog import CompleteDialog
 from app.tray_icon import TrayManager
 from app.utils.constants import APP_DISPLAY_NAME
+from app.widgets.searchable_combo import make_searchable_combo, update_completer_model
+
+
+class ProjectSelectDialog(QDialog):
+    """Diálogo de selección de proyecto destino con combo buscable (tarea 5.4)."""
+
+    def __init__(self, projects: list[tuple[int, str]], parent=None):
+        super().__init__(parent)
+        self._projects = projects or []
+        self.setWindowTitle("Copiar a otro proyecto")
+        self.setMinimumWidth(420)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        layout.addWidget(QLabel("Selecciona el proyecto destino:"))
+
+        self._combo = make_searchable_combo()
+        for pid, pname in self._projects:
+            self._combo.addItem(pname, pid)
+        update_completer_model(self._combo)
+        layout.addWidget(self._combo)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @property
+    def selected_project_id(self) -> int:
+        return self._combo.currentData() or 0
 
 
 class MainWindow(QMainWindow):
@@ -93,6 +129,7 @@ class MainWindow(QMainWindow):
         self._task_table.setObjectName("task_table")
         self._task_table.tarea_doble_click.connect(self._editar_tarea)
         self._task_table.tarea_abrir_url.connect(self._abrir_url_redmine)
+        self._task_table.tarea_mover_proyecto.connect(self._copiar_tarea_otro_proyecto)
         self._task_table.cambio_rapido.connect(self._on_cambio_rapido)
         self._task_table.due_date_cambiada.connect(self._on_due_date_changed)
         self._task_table.columnas_cambiadas.connect(self._on_columnas_cambiadas)
@@ -517,6 +554,7 @@ class MainWindow(QMainWindow):
                     due_date=dlg.due_date if dlg.due_enabled else "",
                     done_ratio=dlg.done_ratio,
                     uploads=dlg.upload_tokens or None,
+                    custom_fields=dlg.custom_fields or None,
                 )
                 # Crear items del checklist pendientes
                 new_issue_id = result.get("issue", {}).get("id", 0)
@@ -575,6 +613,7 @@ class MainWindow(QMainWindow):
                 "status_id": data.get("status", {}).get("id", 0),
                 "journals": data.get("_journals", []),
                 "attachments": data.get("_attachments", []),
+                "custom_fields": data.get("_custom_fields", {}),
             }
 
             # Cargar categorías y miembros iniciales para el proyecto de la tarea
@@ -620,6 +659,7 @@ class MainWindow(QMainWindow):
                     done_ratio=dlg.done_ratio,
                     status_id=dlg.status_id if dlg.status_id else None,
                     uploads=dlg.upload_tokens or None,
+                    custom_fields=dlg.custom_fields or None,
                 )
                 if dlg.pending_comment:
                     self._redmine.add_issue_note(issue_id, dlg.pending_comment)
@@ -635,6 +675,169 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error inesperado",
                                  f"Ocurrió un error inesperado al editar la tarea:\n{str(e)}")
+
+    @staticmethod
+    def _compose_copied_description(issue_id: int, description: str) -> str:
+        """Compone la descripción de la copia citando el origen en blockquote (D2).
+
+        Devuelve la frase literal "Tarea creada partiendo de la tarea #<id>", una
+        línea en blanco y cada línea de la descripción origen prefijada con "> ".
+        Si la descripción origen está vacía, solo se incluye la frase.
+        """
+        header = f"Tarea creada partiendo de la tarea #{issue_id}"
+        if not description or not description.strip():
+            return header
+        quoted = "\n".join(f"> {line}" for line in description.splitlines())
+        return f"{header}\n\n{quoted}"
+
+    def _copiar_tarea_otro_proyecto(self, issue_id: int):
+        """Copia una tarea a otro proyecto (tareas 5.3, 5.4, 7.2 y 7.3).
+
+        Pide el proyecto destino, obtiene la tarea origen con journals/adjuntos,
+        carga categorías, miembros y campos personalizados del destino y abre el
+        TaskDialog en modo copia. La creación real (create_issue) y la copia de
+        adjuntos (descarga + resubida) pertenecen a otra fase (7.4/7.5).
+        """
+        if not self._redmine:
+            return
+
+        dlg = ProjectSelectDialog(self._projects, self)
+        if dlg.exec() != ProjectSelectDialog.DialogCode.Accepted:
+            return
+        dest_project_id = dlg.selected_project_id
+        if not dest_project_id:
+            return
+
+        try:
+            data = self._redmine.get_issue_with_journals(issue_id)
+        except RedmineError as e:
+            QMessageBox.critical(self, "Error",
+                                 f"No se pudo obtener la tarea origen:\n{str(e)}")
+            return
+
+        subject = data.get("subject", "")
+        description = data.get("description", "")
+        attachments = data.get("_attachments", [])
+
+        # Cargar categorías y miembros del proyecto destino (patrón de _nueva_tarea)
+        initial_categories: list[tuple[int, str]] = []
+        members: list[tuple[int, str]] = []
+        try:
+            cats = self._redmine.get_project_issue_categories(dest_project_id)
+            initial_categories = [(c.id, c.name) for c in cats]
+        except RedmineError:
+            pass
+        try:
+            mbs = self._redmine.get_project_memberships(dest_project_id)
+            members = [(m.user_id, m.user_name) for m in mbs if m.user_id]
+        except RedmineError:
+            pass
+        # Los campos personalizados del destino los carga TaskDialog al seleccionar
+        # el proyecto (default_project_id dispara _on_project_changed).
+
+        copy_dlg = TaskDialog(
+            self,
+            projects=self._projects,
+            trackers=self._trackers,
+            priorities=self._priorities,
+            statuses=self._statuses,
+            initial_categories=initial_categories,
+            redmine_client=self._redmine,
+            default_project_id=dest_project_id,
+            members=members,
+            current_user_id=self._current_user_id,
+            copy_from_issue_id=issue_id,
+            copy_attachments=attachments,
+            copy_subject=subject,
+            copy_description=self._compose_copied_description(issue_id, description),
+        )
+        if copy_dlg.exec() != TaskDialog.DialogCode.Accepted:
+            return
+
+        # 7.4: copiar los adjuntos propuestos (descarga temporal + resubida).
+        # La tarea origen solo se lee: nunca se modifica (7.6).
+        # Los archivos nuevos añadidos en el diálogo (upload_tokens) se combinan
+        # con los tokens de los adjuntos propuestos copiados.
+        uploads: list[dict] = list(copy_dlg.upload_tokens or [])
+        proposed = copy_dlg.proposed_attachments
+        if proposed:
+            try:
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    for att in proposed:
+                        filename = TaskDialog._attachment_get(att, "filename", "sin_nombre")
+                        content_url = TaskDialog._attachment_get(att, "content_url", "")
+                        if not content_url:
+                            raise RedmineError(
+                                f"No se encontró la URL de descarga del adjunto '{filename}'."
+                            )
+                        # W3: prefijar con el id del adjunto para que dos adjuntos
+                        # con el mismo filename no se sobrescriban en tmp.
+                        att_id = TaskDialog._attachment_get(att, "id", 0)
+                        dest_path = os.path.join(tmp_dir, f"{att_id}_{os.path.basename(filename)}")
+                        self._redmine.download_attachment(content_url, dest_path)
+                        result = self._redmine.upload_file(dest_path)
+                        token = result.get("upload", {}).get("token", "")
+                        if not token:
+                            raise RedmineError(
+                                f"No se pudo obtener el token de subida para '{filename}'."
+                            )
+                        content_type, _ = mimetypes.guess_type(filename)
+                        uploads.append({
+                            "token": token,
+                            "filename": filename,
+                            "content_type": content_type or "application/octet-stream",
+                        })
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Error al copiar adjuntos",
+                    f"No se pudieron copiar los adjuntos:\n{str(e)}"
+                )
+                return  # No crear la tarea con datos incompletos
+
+        # 7.5: crear la tarea en el proyecto destino (el origen no se toca, 7.6)
+        try:
+            result = self._redmine.create_issue(
+                project_id=copy_dlg.project_id,
+                subject=copy_dlg.subject,
+                description=copy_dlg.description_raw,
+                tracker_id=copy_dlg.tracker_id,
+                priority_id=copy_dlg.priority_id,
+                category_id=copy_dlg.category_id,
+                assigned_to_id=copy_dlg.assigned_to_id or None,
+                start_date=copy_dlg.start_date,
+                due_date=copy_dlg.due_date if copy_dlg.due_enabled else "",
+                done_ratio=copy_dlg.done_ratio,
+                custom_fields=copy_dlg.custom_fields or None,
+                uploads=uploads or None,
+            )
+            # Crear items del checklist pendientes (mismo manejo que _nueva_tarea)
+            new_issue_id = result.get("issue", {}).get("id", 0)
+            if new_issue_id and copy_dlg.pending_checklist_items:
+                failed_items: list[str] = []
+                for subject in copy_dlg.pending_checklist_items:
+                    try:
+                        self._redmine.create_checklist_item(new_issue_id, subject)
+                    except Exception:
+                        failed_items.append(subject)
+                if failed_items:
+                    QMessageBox.warning(
+                        self, "Checklist parcial",
+                        f"La tarea se creó correctamente, pero algunos items del checklist "
+                        f"no pudieron crearse:\n" +
+                        "\n".join(f"  • {item}" for item in failed_items)
+                    )
+            self._cargar_issues()
+        except RedmineValidationError as e:
+            errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
+            QMessageBox.critical(self, "Error de validación",
+                                 f"Redmine rechazó la tarea:\n{errors_text}")
+        except RedmineConnectionError as e:
+            QMessageBox.critical(self, "Error de conexión", str(e))
+        except RedmineError as e:
+            QMessageBox.critical(self, "Error", f"No se pudo crear la tarea:\n{str(e)}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error inesperado",
+                                 f"Ocurrió un error inesperado al crear la tarea:\n{str(e)}")
 
     def _asignar_tarea(self):
         issue_id = self._task_table.get_selected_issue_id()

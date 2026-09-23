@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Any
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -6,13 +7,15 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit, QComboBox, QDialogButtonBox,
     QLabel, QSpinBox, QMessageBox, QGroupBox,
     QDateEdit, QSlider, QHBoxLayout, QScrollArea,
-    QWidget, QCompleter, QSizePolicy,
+    QWidget, QSizePolicy,
     QPushButton, QFileDialog, QFrame, QCheckBox,
+    QDoubleSpinBox, QListWidget, QAbstractItemView,
 )
 
 from app.services.redmine_client import RedmineClient
 from app.widgets.comments_widget import CommentsWidget
 from app.widgets.checklist_widget import ChecklistWidget
+from app.widgets.searchable_combo import make_searchable_combo, update_completer_model
 
 
 class TaskDialog(QDialog):
@@ -25,7 +28,11 @@ class TaskDialog(QDialog):
                  task_data: dict | None = None,
                  default_project_id: int = 0,
                  members: list[tuple[int, str]] | None = None,
-                 current_user_id: int = 0):
+                 current_user_id: int = 0,
+                 copy_from_issue_id: int = 0,
+                 copy_attachments: list | None = None,
+                 copy_subject: str = "",
+                 copy_description: str = ""):
         super().__init__(parent)
         self._projects = projects or []
         self._trackers = trackers or []
@@ -38,10 +45,25 @@ class TaskDialog(QDialog):
         self._default_project_id = default_project_id or 0
         self._members = members or []
         self._current_user_id = current_user_id
+        # Modo copia: alta (no edición) con datos y adjuntos propuestos del origen.
+        self._copy_mode = bool(copy_from_issue_id)
+        self._copy_from_issue_id = copy_from_issue_id
+        self._copy_attachments: list = list(copy_attachments) if copy_attachments else []
+        self._copy_subject = copy_subject
+        self._copy_description = copy_description
         self._pending_files: list[str] = []
         self._upload_tokens: list[dict] = []
         self._pending_checklist_items: list[str] = []  # items en modo creación
         self._temp_checklist_counter: int = -1  # IDs temporales negativos
+        # Campos personalizados: valores previos del issue (para poder limpiarlos)
+        # y widgets construidos dinámicamente por proyecto.
+        self._initial_custom_fields: dict[int, Any] = {}
+        self._custom_field_widgets: dict[int, dict] = {}
+        if task_data:
+            raw_cf = task_data.get("custom_fields") or task_data.get("_custom_fields") or {}
+            self._initial_custom_fields = {
+                int(k): v for k, v in raw_cf.items()
+            } if isinstance(raw_cf, dict) else {}
 
         self.setWindowTitle("Editar tarea" if self._is_edit else "Nueva tarea")
         self.setMinimumWidth(700)
@@ -54,6 +76,9 @@ class TaskDialog(QDialog):
         if self._is_edit and self._redmine:
             self._load_checklists()
             self._load_comments()
+            self._load_attachments()
+        elif self._copy_mode:
+            # En modo copia se muestran los adjuntos origen como propuesta.
             self._load_attachments()
 
     # ================================================================
@@ -219,6 +244,14 @@ class TaskDialog(QDialog):
             self._checklist_group.setVisible(False)
         scroll_layout.addWidget(self._checklist_group)
 
+        # --- Grupo: Campos personalizados ---
+        # Se inserta entre Checklist y Comentarios; oculto hasta cargar campos.
+        self._custom_fields_group = QGroupBox("Campos personalizados")
+        self._custom_fields_form = QFormLayout(self._custom_fields_group)
+        self._custom_fields_form.setSpacing(6)
+        self._custom_fields_group.setVisible(False)
+        scroll_layout.addWidget(self._custom_fields_group)
+
         # --- Grupo: Comentarios ---
         self._comments_group = QGroupBox("Comentarios")
         comments_layout = QVBoxLayout(self._comments_group)
@@ -263,31 +296,13 @@ class TaskDialog(QDialog):
         main_layout.addWidget(buttons)
 
     def _make_searchable_combo(self) -> QComboBox:
-        """Crea un QComboBox editable con QCompleter para búsqueda por teclado (MatchContains).
-
-        Usa QCompleter([], combo) en lugar de QCompleter(combo) para que el modelo
-        del completer no dependa del modelo del combo (que se destruye al hacer clear()).
-        El caller debe actualizar el modelo llamando a _update_completer_model(combo).
-        """
-        combo = QComboBox()
-        combo.setEditable(True)
-        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        completer = QCompleter([], combo)
-        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        combo.setCompleter(completer)
-        combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        # Guardar referencia explícita al completer para acceso posterior
-        combo._completer = completer
-        return combo
+        """Crea un combo buscable delegando en el helper compartido."""
+        return make_searchable_combo()
 
     @staticmethod
     def _update_completer_model(combo: QComboBox):
-        """Sincroniza el modelo del QCompleter con los items actuales del combo."""
-        completer = getattr(combo, '_completer', None)
-        if completer:
-            names = [combo.itemText(i) for i in range(combo.count())]
-            completer.model().setStringList(names)
+        """Sincroniza el modelo del QCompleter delegando en el helper compartido."""
+        update_completer_model(combo)
 
     # ================================================================
     # Population
@@ -298,6 +313,9 @@ class TaskDialog(QDialog):
             if self._default_project_id:
                 self._set_combo_data(self._project_combo, self._default_project_id)
                 self._on_project_changed()
+            if self._copy_mode:
+                self._subject_edit.setText(self._copy_subject)
+                self._description_edit.setPlainText(self._copy_description)
             if self._members:
                 self._populate_members(self._members)
             return
@@ -362,9 +380,10 @@ class TaskDialog(QDialog):
         if assigned_id:
             self._set_combo_data(self._assigned_combo, assigned_id)
 
-        # Cargar categorías del proyecto
+        # Cargar categorías y campos personalizados del proyecto
         if self._redmine and pid:
             self._load_categories_for_project(pid)
+            self._load_custom_fields_for_project(pid)
 
     def _set_combo_data(self, combo: QComboBox, data_value):
         """Selecciona el item del combo cuyo userData coincida con data_value."""
@@ -382,6 +401,7 @@ class TaskDialog(QDialog):
         if project_id and self._redmine:
             self._load_categories_for_project(project_id)
             self._load_members_for_project(project_id)
+            self._load_custom_fields_for_project(project_id)
 
     def _load_categories_for_project(self, project_id: int):
         try:
@@ -448,6 +468,220 @@ class TaskDialog(QDialog):
             self._populate_members(members)
         except Exception:
             self._populate_members([])
+
+    # ================================================================
+    # Campos personalizados
+    # ================================================================
+
+    def _load_custom_fields_for_project(self, project_id: int):
+        """Carga los campos personalizados del proyecto y construye sus widgets.
+
+        Oculta el grupo si el proyecto no tiene campos o si la carga falla.
+        """
+        self._clear_custom_fields()
+        if not project_id or not self._redmine:
+            self._custom_fields_group.setVisible(False)
+            return
+        try:
+            fields = self._redmine.get_project_custom_fields(project_id)
+        except Exception:
+            # Si falla la carga, ocultar la sección sin romper el diálogo
+            self._custom_fields_group.setVisible(False)
+            return
+        if not fields:
+            self._custom_fields_group.setVisible(False)
+            return
+        for field_def in fields:
+            self._add_custom_field_widget(field_def)
+        self._apply_custom_field_values()
+        self._custom_fields_group.setVisible(True)
+
+    def _clear_custom_fields(self):
+        """Elimina los widgets de campos personalizados construidos."""
+        while self._custom_fields_form.rowCount():
+            self._custom_fields_form.removeRow(0)
+        self._custom_field_widgets.clear()
+
+    def _add_custom_field_widget(self, field_def):
+        """Construye el widget de un campo según su field_format y lo añade al form."""
+        label = field_def.name + (" *" if field_def.is_required else "")
+        widget, kind, extra = self._build_custom_field_widget(field_def)
+        if extra is not None:
+            container = QWidget()
+            h_layout = QHBoxLayout(container)
+            h_layout.setContentsMargins(0, 0, 0, 0)
+            h_layout.setSpacing(4)
+            h_layout.addWidget(widget)
+            h_layout.addWidget(extra)
+            h_layout.addStretch()
+            self._custom_fields_form.addRow(label + ":", container)
+        else:
+            self._custom_fields_form.addRow(label + ":", widget)
+        self._custom_field_widgets[field_def.id] = {
+            "field": field_def,
+            "kind": kind,
+            "widget": widget,
+            "extra": extra,
+        }
+
+    def _build_custom_field_widget(self, field_def):
+        """Crea el control de edición según field_format.
+
+        Returns:
+            (widget, kind, extra): kind identifica el tipo para serializar;
+            extra es un widget adicional (p. ej. checkbox de fecha) o None.
+        """
+        fmt = field_def.field_format
+        # Campo de valor múltiple: multiselección sobre possible_values
+        if field_def.multiple:
+            list_widget = QListWidget()
+            list_widget.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+            for value in field_def.possible_values or []:
+                list_widget.addItem(str(value))
+            list_widget.setMaximumHeight(100)
+            return list_widget, "multiple", None
+
+        if fmt == "string":
+            return QLineEdit(), "string", None
+        if fmt == "text":
+            edit = QPlainTextEdit()
+            edit.setMaximumHeight(80)
+            return edit, "text", None
+        if fmt == "int":
+            spin = QSpinBox()
+            spin.setRange(-2147483648, 2147483647)
+            spin.setSpecialValueText("")  # 0 se muestra como vacío
+            return spin, "int", None
+        if fmt == "float":
+            dspin = QDoubleSpinBox()
+            dspin.setRange(-1e12, 1e12)
+            dspin.setDecimals(4)
+            dspin.setSpecialValueText("")  # 0.0 se muestra como vacío
+            return dspin, "float", None
+        if fmt == "date":
+            date_edit = QDateEdit()
+            date_edit.setCalendarPopup(True)
+            date_edit.setDisplayFormat("yyyy-MM-dd")
+            date_edit.setDate(date.today())
+            check = QCheckBox("Sin valor")
+            check.setChecked(True)
+            date_edit.setEnabled(False)
+            check.toggled.connect(lambda checked: date_edit.setEnabled(not checked))
+            return date_edit, "date", check
+        if fmt == "bool":
+            return QCheckBox(), "bool", None
+        if fmt == "list":
+            combo = QComboBox()
+            combo.addItem("", "")  # opción vacía para poder limpiar
+            for value in field_def.possible_values or []:
+                combo.addItem(str(value), str(value))
+            return combo, "list", None
+        # Formato no contemplado: fallback a texto libre
+        return QLineEdit(), "string", None
+
+    def _apply_custom_field_values(self):
+        """Aplica el valor previo del issue o el default_value a cada widget."""
+        for cf_id, entry in self._custom_field_widgets.items():
+            previous = self._initial_custom_fields.get(cf_id)
+            # Un campo "tenía valor previo" aunque sea 0/0.0: distinguirlo de "sin valor".
+            had_value = previous is not None and previous != "" and previous != []
+            entry["had_value"] = had_value
+            if had_value:
+                self._set_custom_field_value(entry, previous)
+            elif entry["field"].default_value not in (None, ""):
+                self._set_custom_field_value(entry, entry["field"].default_value)
+
+    def _set_custom_field_value(self, entry: dict, value):
+        """Asigna un valor (del issue o default) al widget de un campo."""
+        kind = entry["kind"]
+        widget = entry["widget"]
+        if kind == "bool":
+            widget.setChecked(str(value).lower() in ("1", "true", "yes"))
+        elif kind == "date":
+            check = entry["extra"]
+            try:
+                d = date.fromisoformat(str(value)[:10])
+                widget.setDate(d)
+                check.setChecked(False)
+            except (ValueError, TypeError):
+                check.setChecked(True)
+        elif kind == "int":
+            try:
+                widget.setValue(int(value))
+            except (ValueError, TypeError):
+                widget.setValue(0)
+        elif kind == "float":
+            try:
+                widget.setValue(float(value))
+            except (ValueError, TypeError):
+                widget.setValue(0.0)
+        elif kind == "list":
+            idx = widget.findData(str(value))
+            if idx >= 0:
+                widget.setCurrentIndex(idx)
+        elif kind == "multiple":
+            selected = value if isinstance(value, list) else [value]
+            selected_strs = {str(v) for v in selected}
+            for i in range(widget.count()):
+                if widget.item(i).text() in selected_strs:
+                    widget.item(i).setSelected(True)
+        else:  # string / text
+            if kind == "text":
+                widget.setPlainText(str(value))
+            else:
+                widget.setText(str(value))
+
+    def _read_custom_field_value(self, entry: dict, had_value: bool = False):
+        """Serializa el valor actual del widget según su tipo.
+
+        had_value indica que el campo ya tenía valor previo en el issue: en ese
+        caso un 0/0.0 numérico se serializa como "0"/"0.0" en lugar de "".
+        """
+        kind = entry["kind"]
+        widget = entry["widget"]
+        if kind == "bool":
+            if widget.isChecked():
+                return "1"
+            # Sin marcar: "0" solo si tenía valor previo o es obligatorio;
+            # en caso contrario se omite (D7: vacíos sin valor previo no se envían).
+            if had_value or entry["field"].is_required:
+                return "0"
+            return ""
+        if kind == "date":
+            check = entry["extra"]
+            if check.isChecked():
+                return ""
+            return widget.date().toString("yyyy-MM-dd")
+        if kind == "int":
+            return "" if widget.value() == 0 and not had_value else str(widget.value())
+        if kind == "float":
+            return "" if widget.value() == 0.0 and not had_value else str(widget.value())
+        if kind == "list":
+            return widget.currentData() or ""
+        if kind == "multiple":
+            return [widget.item(i).text() for i in range(widget.count())
+                    if widget.item(i).isSelected()]
+        if kind == "text":
+            return widget.toPlainText().strip()
+        return widget.text().strip()
+
+    @property
+    def custom_fields(self) -> dict[int, Any]:
+        """Devuelve los valores de los campos personalizados listos para la API.
+
+        Incluye con "" (o []) los campos que el issue ya tenía y el usuario ha
+        vaciado, para permitir limpiarlos; omite los vacíos sin valor previo.
+        """
+        result: dict[int, Any] = {}
+        for cf_id, entry in self._custom_field_widgets.items():
+            had_value = entry.get("had_value", False)
+            value = self._read_custom_field_value(entry, had_value)
+            if value == "" or value == []:
+                if had_value:
+                    result[cf_id] = [] if entry["kind"] == "multiple" else ""
+                continue
+            result[cf_id] = value
+        return result
 
     # ================================================================
     # Subida de archivos
@@ -582,8 +816,11 @@ class TaskDialog(QDialog):
     # ================================================================
 
     def _load_attachments(self):
-        """Carga los adjuntos desde task_data y crea un frame por cada uno."""
-        attachments = self._task_data.get("attachments", [])
+        """Carga los adjuntos desde task_data (o la propuesta en modo copia)."""
+        if self._copy_mode:
+            attachments = self._copy_attachments
+        else:
+            attachments = self._task_data.get("attachments", [])
         # Limpiar adjuntos anteriores
         while self._attachments_layout.count():
             item = self._attachments_layout.takeAt(0)
@@ -619,15 +856,23 @@ class TaskDialog(QDialog):
                 download_btn.clicked.connect(lambda checked, a=att: self._on_download_attachment(a))
                 f_layout.addWidget(download_btn)
 
-                # Boton eliminar
+                # Boton eliminar (en modo copia: quitar de la propuesta, sin borrar)
                 attachment_id = self._attachment_get(att, "id", 0)
                 frame.setProperty("attachment_id", attachment_id)
                 delete_btn = QPushButton("−")
                 delete_btn.setFixedWidth(30)
-                delete_btn.setToolTip("Eliminar adjunto")
-                delete_btn.clicked.connect(
-                    lambda checked, aid=attachment_id, fn=filename: self._on_delete_attachment(aid, fn)
-                )
+                if self._copy_mode:
+                    delete_btn.setToolTip("Quitar de la propuesta")
+                    delete_btn.clicked.connect(
+                        lambda checked, aid=attachment_id:
+                        self._on_remove_proposed_attachment(aid)
+                    )
+                else:
+                    delete_btn.setToolTip("Eliminar adjunto")
+                    delete_btn.clicked.connect(
+                        lambda checked, aid=attachment_id, fn=filename:
+                        self._on_delete_attachment(aid, fn)
+                    )
                 f_layout.addWidget(delete_btn)
 
                 self._attachments_layout.addWidget(frame)
@@ -680,6 +925,25 @@ class TaskDialog(QDialog):
                 f"No se pudo eliminar el adjunto '{filename}'.\n"
                 f"Es posible que el servidor Redmine no soporte esta operación."
             )
+
+    def _on_remove_proposed_attachment(self, attachment_id: int):
+        """Quita un adjunto de la propuesta de copia SIN tocar el servidor.
+
+        Nunca llama a delete_attachment: solo elimina el widget y la entrada de
+        la lista de propuesta.
+        """
+        # S3: un id 0 (improbable) no debe eliminar toda la propuesta por filtrado.
+        if attachment_id == 0:
+            return
+        self._copy_attachments = [
+            att for att in self._copy_attachments
+            if self._attachment_get(att, "id", 0) != attachment_id
+        ]
+        for i in range(self._attachments_layout.count()):
+            widget = self._attachments_layout.itemAt(i).widget()
+            if widget and widget.property("attachment_id") == attachment_id:
+                widget.deleteLater()
+                break
 
     @staticmethod
     def _attachment_get(att, key: str, default=""):
@@ -780,6 +1044,11 @@ class TaskDialog(QDialog):
         return self._description_edit.toPlainText().strip()
 
     @property
+    def description_raw(self) -> str:
+        """Texto crudo de la descripción, sin strip (flujo de copia)."""
+        return self._description_edit.toPlainText()
+
+    @property
     def priority_id(self) -> int:
         return self._prior_combo.currentData() or 2
 
@@ -821,6 +1090,11 @@ class TaskDialog(QDialog):
     def pending_checklist_items(self) -> list[str]:
         """Devuelve los items de checklist pendientes de crear (solo modo nueva tarea)."""
         return list(self._pending_checklist_items)
+
+    @property
+    def proposed_attachments(self) -> list:
+        """Adjuntos que quedan en la propuesta de copia (modo copia)."""
+        return list(self._copy_attachments)
 
     @property
     def pending_comment(self) -> str:

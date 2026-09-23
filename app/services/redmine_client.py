@@ -40,6 +40,21 @@ class RedmineIssue:
     category_id: int = 0
     category_name: str = ""
     attachments: list["RedmineAttachment"] = field(default_factory=list)
+    custom_fields: dict[int, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RedmineCustomField:
+    """Definición de un campo personalizado de un proyecto Redmine."""
+    id: int
+    name: str
+    field_format: str = ""
+    is_required: bool = False
+    multiple: bool = False
+    possible_values: list[str] = field(default_factory=list)
+    default_value: str = ""
+    visible: bool = True
+    editable: bool = True
 
 
 @dataclass
@@ -491,7 +506,18 @@ class RedmineClient:
             category_id=i.get("category", {}).get("id", 0),
             category_name=i.get("category", {}).get("name", ""),
             attachments=cls._parse_attachments(i.get("attachments", [])),
+            custom_fields=cls._parse_custom_fields(i.get("custom_fields", [])),
         )
+
+    @staticmethod
+    def _parse_custom_fields(custom_fields_raw: list) -> dict[int, Any]:
+        """Convierte el array custom_fields de la API en un dict id -> valor."""
+        result: dict[int, Any] = {}
+        for cf in custom_fields_raw or []:
+            cf_id = cf.get("id")
+            if cf_id is not None:
+                result[int(cf_id)] = cf.get("value")
+        return result
 
     @staticmethod
     def _parse_attachments(attachments_raw: list) -> list[RedmineAttachment]:
@@ -536,6 +562,8 @@ class RedmineClient:
         issue_data["_journals"] = journals
         # Parsear attachments
         issue_data["_attachments"] = self._parse_attachments(issue_data.get("attachments", []))
+        # Valores actuales de campos personalizados (dict id -> valor)
+        issue_data["_custom_fields"] = self._parse_custom_fields(issue_data.get("custom_fields", []))
         return issue_data
 
     def create_issue(self, project_id: int, subject: str, description: str = "",
@@ -544,7 +572,8 @@ class RedmineClient:
                      category_id: int = 0, start_date: str = "",
                      due_date: str = "",
                      done_ratio: int = 0,
-                     uploads: list[dict] | None = None) -> dict:
+                     uploads: list[dict] | None = None,
+                     custom_fields: dict[int, Any] | None = None) -> dict:
         payload: dict[str, Any] = {
             "project_id": project_id,
             "subject": subject,
@@ -564,13 +593,30 @@ class RedmineClient:
             payload["done_ratio"] = done_ratio
         if uploads:
             payload["uploads"] = uploads
+        if custom_fields:
+            payload["custom_fields"] = self._serialize_custom_fields(custom_fields)
         return self._post("/issues.json", {"issue": payload})
+
+    @staticmethod
+    def _serialize_custom_fields(custom_fields: dict[int, Any]) -> list[dict]:
+        """Serializa un dict id -> valor al formato de la API: [{"id": N, "value": X}].
+
+        Las entradas con valor None se omiten (no se envían).
+        """
+        return [
+            {"id": cf_id, "value": value}
+            for cf_id, value in custom_fields.items()
+            if value is not None
+        ]
 
     def update_issue(self, issue_id: int, **fields) -> dict:
         uploads = fields.pop("uploads", None)
+        custom_fields = fields.pop("custom_fields", None)
         payload: dict[str, Any] = {"issue": fields}
         if uploads:
             payload["issue"]["uploads"] = uploads
+        if custom_fields:
+            payload["issue"]["custom_fields"] = self._serialize_custom_fields(custom_fields)
         return self._put(f"/issues/{issue_id}.json", payload)
 
     def assign_issue(self, issue_id: int, user_id: int, notes: str = "") -> dict:
@@ -667,6 +713,29 @@ class RedmineClient:
                 project_id=project_id,
             ))
         return categories
+
+    def get_project_custom_fields(self, project_id: int) -> list[RedmineCustomField]:
+        """Obtiene los campos personalizados definidos en un proyecto.
+
+        Realiza GET /projects/{id}.json?include=issue_custom_fields y mapea
+        cada entrada de `issue_custom_fields` a un RedmineCustomField.
+        """
+        raw = self._get(f"/projects/{project_id}.json", params={"include": "issue_custom_fields"})
+        project = raw.get("project", {})
+        fields: list[RedmineCustomField] = []
+        for cf in project.get("issue_custom_fields", []) or []:
+            fields.append(RedmineCustomField(
+                id=cf["id"],
+                name=cf.get("name", ""),
+                field_format=cf.get("field_format", ""),
+                is_required=bool(cf.get("is_required", False)),
+                multiple=bool(cf.get("multiple", False)),
+                possible_values=cf.get("possible_values", []) or [],
+                default_value=cf.get("default_value", ""),
+                visible=cf.get("visible", True),
+                editable=cf.get("editable", True),
+            ))
+        return fields
 
     # ---- Miembros del proyecto ----
 

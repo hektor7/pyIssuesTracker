@@ -7,8 +7,9 @@ from PyQt6.QtWidgets import QMainWindow, QDialog, QMessageBox
 
 from app.dialogs.assign_dialog import AssignDialog
 from app.dialogs.complete_dialog import CompleteDialog
+from app.dialogs.task_dialog import TaskDialog as RealTaskDialog
 from app.main_window import MainWindow
-from app.services.redmine_client import RedmineValidationError
+from app.services.redmine_client import RedmineError, RedmineValidationError
 
 
 @pytest.fixture
@@ -603,3 +604,517 @@ class TestOnColumnasCambiadas:
         main_window._on_columnas_cambiadas()
         assert main_window._settings.visible_columns == ["id", "project", "title"]
         main_window._cargar_issues.assert_called_once()
+
+
+class TestCopiarTareaOtroProyecto:
+    """Flujo de copia a otro proyecto (tareas 5.3, 5.4, 7.2 y 7.3)."""
+
+    @pytest.fixture
+    def main_window(self, qapp):
+        with (
+            patch.object(MainWindow, "_setup_ui"),
+            patch.object(MainWindow, "_setup_menu"),
+            patch.object(MainWindow, "_setup_tray"),
+            patch.object(MainWindow, "_restore_window_state"),
+        ):
+            w = MainWindow()
+            w._redmine = MagicMock()
+            w._task_table = MagicMock()
+            w._filter_bar = MagicMock()
+            w._cargar_issues = MagicMock()
+            w._projects = [(5, "Destino")]
+            w._trackers = []
+            w._priorities = []
+            w._statuses = []
+            w._current_user_id = 1
+            return w
+
+    def _issue(self):
+        return {
+            "id": 42,
+            "subject": "Origen",
+            "description": "linea1\nlinea2",
+            "project": {"id": 1},
+            "tracker": {"id": 1},
+            "priority": {"id": 2},
+            "status": {"id": 1},
+            "_journals": [],
+            "_attachments": [{"id": 11, "filename": "a.txt"}],
+            "_custom_fields": {},
+        }
+
+    def test_cancelar_no_abre_task_dialog(self, main_window):
+        with (
+            patch("app.main_window.ProjectSelectDialog") as mock_sel,
+            patch("app.main_window.TaskDialog") as mock_td,
+        ):
+            mock_sel.DialogCode = QDialog.DialogCode
+            mock_sel.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            main_window._copiar_tarea_otro_proyecto(42)
+
+        mock_td.assert_not_called()
+        main_window._redmine.get_issue_with_journals.assert_not_called()
+
+    def test_aceptar_abre_task_dialog_en_modo_copia(self, main_window):
+        main_window._redmine.get_issue_with_journals.return_value = self._issue()
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+
+        with (
+            patch("app.main_window.ProjectSelectDialog") as mock_sel,
+            patch("app.main_window.TaskDialog") as mock_td,
+        ):
+            mock_sel.DialogCode = QDialog.DialogCode
+            mock_sel.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            mock_sel.return_value.selected_project_id = 5
+            mock_td.DialogCode = QDialog.DialogCode
+            mock_td.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            main_window._copiar_tarea_otro_proyecto(42)
+
+        main_window._redmine.get_issue_with_journals.assert_called_once_with(42)
+        kwargs = mock_td.call_args.kwargs
+        assert kwargs["default_project_id"] == 5
+        assert kwargs["copy_from_issue_id"] == 42
+        assert kwargs["copy_subject"] == "Origen"
+        assert kwargs["copy_description"] == (
+            "Tarea creada partiendo de la tarea #42\n\n"
+            "> linea1\n> linea2"
+        )
+        assert kwargs["copy_attachments"] == [{"id": 11, "filename": "a.txt"}]
+        # Categorías y miembros del destino se cargan antes de abrir el diálogo
+        main_window._redmine.get_project_issue_categories.assert_called_once_with(5)
+        main_window._redmine.get_project_memberships.assert_called_once_with(5)
+
+
+class TestCopiarTareaCreacionEnDestino:
+    """Creación real en el destino (tareas 7.4, 7.5 y 7.6).
+
+    Verifica que al aceptar el diálogo de copia se descargan/resuben los adjuntos
+    propuestos, se llama a create_issue con el project_id destino y uploads, que
+    NUNCA se llama a update_issue sobre el id origen, y que un fallo al copiar
+    adjuntos aborta la creación.
+    """
+
+    @pytest.fixture
+    def main_window(self, qapp):
+        with (
+            patch.object(MainWindow, "_setup_ui"),
+            patch.object(MainWindow, "_setup_menu"),
+            patch.object(MainWindow, "_setup_tray"),
+            patch.object(MainWindow, "_restore_window_state"),
+        ):
+            w = MainWindow()
+            w._redmine = MagicMock()
+            w._task_table = MagicMock()
+            w._filter_bar = MagicMock()
+            w._cargar_issues = MagicMock()
+            w._projects = [(5, "Destino")]
+            w._trackers = []
+            w._priorities = []
+            w._statuses = []
+            w._current_user_id = 1
+            return w
+
+    def _issue(self):
+        return {
+            "id": 42,
+            "subject": "Origen",
+            "description": "linea1\nlinea2",
+            "project": {"id": 1},
+            "tracker": {"id": 1},
+            "priority": {"id": 2},
+            "status": {"id": 1},
+            "_journals": [],
+            "_attachments": [{
+                "id": 11,
+                "filename": "a.txt",
+                "content_url": "https://redmine.example.com/attachments/download/11",
+            }],
+            "_custom_fields": {},
+        }
+
+    def _accepted_copy_dialog(self, **overrides):
+        dlg = MagicMock()
+        dlg.exec.return_value = QDialog.DialogCode.Accepted
+        dlg.project_id = 5
+        dlg.subject = "Origen"
+        dlg.description = "Tarea creada partiendo de la tarea #42\n\n> linea1\n> linea2"
+        dlg.description_raw = "Tarea creada partiendo de la tarea #42\n\n> linea1\n> linea2"
+        dlg.tracker_id = 1
+        dlg.priority_id = 2
+        dlg.category_id = 0
+        dlg.assigned_to_id = 0
+        dlg.start_date = ""
+        dlg.due_date = ""
+        dlg.due_enabled = False
+        dlg.done_ratio = 0
+        dlg.custom_fields = {}
+        dlg.proposed_attachments = []
+        dlg.upload_tokens = []
+        dlg.pending_checklist_items = []
+        for key, value in overrides.items():
+            setattr(dlg, key, value)
+        return dlg
+
+    def _run_copy_flow(self, main_window, copy_dlg, extra_patches=()):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            mock_sel = stack.enter_context(patch("app.main_window.ProjectSelectDialog"))
+            mock_td = stack.enter_context(
+                patch("app.main_window.TaskDialog", return_value=copy_dlg)
+            )
+            # El código de producción usa TaskDialog._attachment_get; al mockear la
+            # clase, restauramos el método estático real para leer filename/content_url.
+            mock_td._attachment_get = RealTaskDialog._attachment_get
+            for p in extra_patches:
+                stack.enter_context(p)
+            mock_sel.DialogCode = QDialog.DialogCode
+            mock_sel.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            mock_sel.return_value.selected_project_id = 5
+            mock_td.DialogCode = QDialog.DialogCode
+            main_window._copiar_tarea_otro_proyecto(42)
+
+    def test_crea_tarea_en_destino_con_uploads(self, main_window):
+        """7.5: create_issue recibe project_id destino y los uploads de los adjuntos."""
+        main_window._redmine.get_issue_with_journals.return_value = self._issue()
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.download_attachment.return_value = None
+        main_window._redmine.upload_file.return_value = {"upload": {"token": "tok-1"}}
+
+        copy_dlg = self._accepted_copy_dialog(
+            proposed_attachments=[{
+                "id": 11,
+                "filename": "a.txt",
+                "content_url": "https://redmine.example.com/attachments/download/11",
+            }]
+        )
+        self._run_copy_flow(main_window, copy_dlg)
+
+        main_window._redmine.download_attachment.assert_called_once()
+        main_window._redmine.upload_file.assert_called_once()
+        main_window._redmine.create_issue.assert_called_once()
+        kwargs = main_window._redmine.create_issue.call_args.kwargs
+        assert kwargs["project_id"] == 5
+        assert kwargs["uploads"] == [{
+            "token": "tok-1",
+            "filename": "a.txt",
+            "content_type": "text/plain",
+        }]
+        main_window._cargar_issues.assert_called_once()
+
+    def test_copia_conserva_espacios_extremos_de_la_descripcion(self, main_window):
+        """R4: en modo copia, create_issue recibe el texto crudo con espacios exactos."""
+        main_window._redmine.get_issue_with_journals.return_value = self._issue()
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+
+        copy_dlg = self._accepted_copy_dialog(
+            description_raw="  Tarea creada partiendo de la tarea #42  ",
+        )
+        self._run_copy_flow(main_window, copy_dlg)
+
+        kwargs = main_window._redmine.create_issue.call_args.kwargs
+        assert kwargs["description"] == "  Tarea creada partiendo de la tarea #42  "
+
+    def test_no_llama_update_issue_sobre_el_origen(self, main_window):
+        """7.6: el flujo de copia nunca modifica la tarea origen."""
+        main_window._redmine.get_issue_with_journals.return_value = self._issue()
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.download_attachment.return_value = None
+        main_window._redmine.upload_file.return_value = {"upload": {"token": "tok-1"}}
+
+        copy_dlg = self._accepted_copy_dialog(
+            proposed_attachments=[{
+                "id": 11,
+                "filename": "a.txt",
+                "content_url": "https://redmine.example.com/attachments/download/11",
+            }]
+        )
+        self._run_copy_flow(main_window, copy_dlg)
+
+        main_window._redmine.update_issue.assert_not_called()
+
+    def test_fallo_al_copiar_adjunto_aborta_creacion(self, main_window):
+        """7.4: si falla la descarga de un adjunto, no se crea la tarea."""
+        main_window._redmine.get_issue_with_journals.return_value = self._issue()
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.download_attachment.side_effect = RedmineError("descarga fallida")
+
+        copy_dlg = self._accepted_copy_dialog(
+            proposed_attachments=[{
+                "id": 11,
+                "filename": "a.txt",
+                "content_url": "https://redmine.example.com/attachments/download/11",
+            }]
+        )
+        with patch("app.main_window.QMessageBox") as mock_msgbox:
+            self._run_copy_flow(main_window, copy_dlg, extra_patches=())
+
+        main_window._redmine.create_issue.assert_not_called()
+        main_window._redmine.update_issue.assert_not_called()
+        mock_msgbox.critical.assert_called_once()
+
+    def test_directorio_temporal_se_limpia_aunque_falle(self, main_window):
+        """7.4: el directorio temporal se limpia aunque falle la descarga."""
+        main_window._redmine.get_issue_with_journals.return_value = self._issue()
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.download_attachment.side_effect = RedmineError("descarga fallida")
+
+        copy_dlg = self._accepted_copy_dialog(
+            proposed_attachments=[{
+                "id": 11,
+                "filename": "a.txt",
+                "content_url": "https://redmine.example.com/attachments/download/11",
+            }]
+        )
+        with (
+            patch("app.main_window.tempfile.TemporaryDirectory") as mock_tmp,
+            patch("app.main_window.QMessageBox") as mock_msgbox,
+        ):
+            mock_tmp.return_value.__enter__.return_value = "/tmp/fake-copy"
+            self._run_copy_flow(main_window, copy_dlg, extra_patches=())
+
+        # El contexto se cierra (limpieza) aunque falle la descarga
+        mock_tmp.return_value.__exit__.assert_called_once()
+        main_window._redmine.create_issue.assert_not_called()
+
+    def test_upload_tokens_del_dialogo_se_incluyen_en_uploads(self, main_window):
+        """R2: los archivos nuevos del diálogo se adjuntan junto a la propuesta copiada."""
+        main_window._redmine.get_issue_with_journals.return_value = self._issue()
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.download_attachment.return_value = None
+        main_window._redmine.upload_file.return_value = {"upload": {"token": "tok-1"}}
+
+        copy_dlg = self._accepted_copy_dialog(
+            upload_tokens=[{
+                "token": "tok-nuevo",
+                "filename": "nuevo.txt",
+                "content_type": "text/plain",
+            }],
+            proposed_attachments=[{
+                "id": 11,
+                "filename": "a.txt",
+                "content_url": "https://redmine.example.com/attachments/download/11",
+            }],
+        )
+        self._run_copy_flow(main_window, copy_dlg)
+
+        kwargs = main_window._redmine.create_issue.call_args.kwargs
+        assert kwargs["uploads"] == [
+            {"token": "tok-nuevo", "filename": "nuevo.txt", "content_type": "text/plain"},
+            {"token": "tok-1", "filename": "a.txt", "content_type": "text/plain"},
+        ]
+
+    def test_pending_checklist_items_se_crean_tras_la_copia(self, main_window):
+        """R2: los items pendientes del checklist se crean sobre la tarea creada."""
+        main_window._redmine.get_issue_with_journals.return_value = self._issue()
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.create_issue.return_value = {"issue": {"id": 99}}
+
+        copy_dlg = self._accepted_copy_dialog(
+            pending_checklist_items=["Item 1", "Item 2"],
+        )
+        self._run_copy_flow(main_window, copy_dlg)
+
+        main_window._redmine.create_checklist_item.assert_any_call(99, "Item 1")
+        main_window._redmine.create_checklist_item.assert_any_call(99, "Item 2")
+        assert main_window._redmine.create_checklist_item.call_count == 2
+        main_window._cargar_issues.assert_called_once()
+
+    def test_fallo_parcial_checklist_muestra_warning(self, main_window):
+        """R2: si falla algún item del checklist se avisa sin abortar la copia."""
+        main_window._redmine.get_issue_with_journals.return_value = self._issue()
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.create_issue.return_value = {"issue": {"id": 99}}
+        main_window._redmine.create_checklist_item.side_effect = [None, RuntimeError("boom")]
+
+        copy_dlg = self._accepted_copy_dialog(
+            pending_checklist_items=["Item A", "Item B"],
+        )
+        with patch("app.main_window.QMessageBox") as mock_msgbox:
+            self._run_copy_flow(main_window, copy_dlg)
+
+        mock_msgbox.warning.assert_called_once()
+        main_window._redmine.create_checklist_item.assert_any_call(99, "Item A")
+        main_window._redmine.create_checklist_item.assert_any_call(99, "Item B")
+        main_window._cargar_issues.assert_called_once()
+
+    def test_adjuntos_mismo_filename_no_se_sobrescriben_en_tmp(self, main_window):
+        """W3: dos adjuntos con el mismo filename se descargan a rutas temporales
+        distintas (una por id) y se suben ambos sin sobrescribirse."""
+        main_window._redmine.get_issue_with_journals.return_value = self._issue()
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.download_attachment.return_value = None
+        main_window._redmine.upload_file.side_effect = [
+            {"upload": {"token": "tok-1"}},
+            {"upload": {"token": "tok-2"}},
+        ]
+
+        copy_dlg = self._accepted_copy_dialog(
+            proposed_attachments=[
+                {
+                    "id": 11,
+                    "filename": "a.txt",
+                    "content_url": "https://redmine.example.com/attachments/download/11",
+                },
+                {
+                    "id": 22,
+                    "filename": "a.txt",
+                    "content_url": "https://redmine.example.com/attachments/download/22",
+                },
+            ]
+        )
+        self._run_copy_flow(main_window, copy_dlg)
+
+        # Ambos adjuntos se descargan a rutas temporales distintas (una por id)
+        assert main_window._redmine.download_attachment.call_count == 2
+        dest_paths = [
+            call.args[1]
+            for call in main_window._redmine.download_attachment.call_args_list
+        ]
+        assert len(set(dest_paths)) == 2
+        assert any("11_a.txt" in p for p in dest_paths)
+        assert any("22_a.txt" in p for p in dest_paths)
+
+        # Y ambos se suben (sin sobrescribirse) con su propio token
+        assert main_window._redmine.upload_file.call_count == 2
+        kwargs = main_window._redmine.create_issue.call_args.kwargs
+        assert kwargs["uploads"] == [
+            {"token": "tok-1", "filename": "a.txt", "content_type": "text/plain"},
+            {"token": "tok-2", "filename": "a.txt", "content_type": "text/plain"},
+        ]
+
+    def test_descripcion_enviada_es_la_editada_por_el_usuario(self, main_window):
+        """Lo enviado a create_issue es el texto final editado por el usuario."""
+        main_window._redmine.get_issue_with_journals.return_value = self._issue()
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+
+        copy_dlg = self._accepted_copy_dialog(
+            description_raw="Texto editado por el usuario en el diálogo",
+        )
+        self._run_copy_flow(main_window, copy_dlg)
+
+        kwargs = main_window._redmine.create_issue.call_args.kwargs
+        assert kwargs["description"] == "Texto editado por el usuario en el diálogo"
+
+    def test_copia_al_mismo_proyecto_crea_nueva_y_no_modifica_origen(self, main_window):
+        """Copiar al mismo proyecto del origen crea una tarea nueva sin tocar el origen."""
+        issue = self._issue()
+        issue["project"] = {"id": 5}  # el origen pertenece al proyecto destino
+        main_window._redmine.get_issue_with_journals.return_value = issue
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+
+        copy_dlg = self._accepted_copy_dialog()
+        self._run_copy_flow(main_window, copy_dlg)
+
+        # Se crea una tarea nueva en el proyecto 5 (create_issue)...
+        kwargs = main_window._redmine.create_issue.call_args.kwargs
+        assert kwargs["project_id"] == 5
+        # ...y el origen nunca se modifica
+        main_window._redmine.update_issue.assert_not_called()
+
+
+class TestCustomFieldsEnviados:
+    """custom_fields del diálogo se envía en _nueva_tarea y _editar_tarea."""
+
+    @pytest.fixture
+    def main_window(self, qapp):
+        with (
+            patch.object(MainWindow, "_setup_ui"),
+            patch.object(MainWindow, "_setup_menu"),
+            patch.object(MainWindow, "_setup_tray"),
+            patch.object(MainWindow, "_restore_window_state"),
+        ):
+            w = MainWindow()
+            w._redmine = MagicMock()
+            w._task_table = MagicMock()
+            w._filter_bar = MagicMock()
+            w._filter_bar.selected_project_id = 0
+            w._cargar_issues = MagicMock()
+            w._projects = []
+            w._trackers = []
+            w._priorities = []
+            w._statuses = []
+            w._current_user_id = 1
+            return w
+
+    def test_nueva_tarea_envia_custom_fields(self, main_window):
+        """_nueva_tarea debe pasar custom_fields a create_issue."""
+        mock_dlg = MagicMock()
+        mock_dlg.exec.return_value = QDialog.DialogCode.Accepted
+        mock_dlg.project_id = 1
+        mock_dlg.subject = "Test"
+        mock_dlg.description = ""
+        mock_dlg.tracker_id = 1
+        mock_dlg.priority_id = 2
+        mock_dlg.category_id = 0
+        mock_dlg.assigned_to_id = 0
+        mock_dlg.start_date = ""
+        mock_dlg.due_date = ""
+        mock_dlg.due_enabled = False
+        mock_dlg.done_ratio = 0
+        mock_dlg.upload_tokens = []
+        mock_dlg.custom_fields = {1: "valor"}
+        mock_dlg.pending_checklist_items = []
+
+        with patch("app.main_window.TaskDialog", return_value=mock_dlg) as mock_td:
+            mock_td.DialogCode = QDialog.DialogCode
+            main_window._nueva_tarea()
+
+        kwargs = main_window._redmine.create_issue.call_args.kwargs
+        assert kwargs["custom_fields"] == {1: "valor"}
+
+    def test_editar_tarea_envia_custom_fields(self, main_window):
+        """_editar_tarea debe pasar custom_fields a update_issue."""
+        main_window._redmine.get_issue_with_journals.return_value = {
+            "id": 42,
+            "subject": "Test",
+            "description": "",
+            "project": {"id": 1},
+            "tracker": {"id": 1},
+            "priority": {"id": 2},
+            "category_id": 0,
+            "start_date": "",
+            "due_date": "",
+            "done_ratio": 0,
+            "status": {"id": 1},
+            "_journals": [],
+            "_attachments": [],
+        }
+        main_window._redmine.get_project_issue_categories.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+
+        mock_dlg = MagicMock()
+        mock_dlg.exec.return_value = QDialog.DialogCode.Accepted
+        mock_dlg.project_id = 1
+        mock_dlg.subject = "Test"
+        mock_dlg.description = ""
+        mock_dlg.tracker_id = 1
+        mock_dlg.priority_id = 2
+        mock_dlg.category_id = 0
+        mock_dlg.assigned_to_id = 0
+        mock_dlg.start_date = ""
+        mock_dlg.due_date = ""
+        mock_dlg.due_enabled = False
+        mock_dlg.done_ratio = 0
+        mock_dlg.status_id = 1
+        mock_dlg.upload_tokens = []
+        mock_dlg.custom_fields = {2: "otro"}
+        mock_dlg.pending_comment = ""
+
+        with patch("app.main_window.TaskDialog", return_value=mock_dlg) as mock_td:
+            mock_td.DialogCode = QDialog.DialogCode
+            main_window._editar_tarea(42)
+
+        kwargs = main_window._redmine.update_issue.call_args.kwargs
+        assert kwargs["custom_fields"] == {2: "otro"}

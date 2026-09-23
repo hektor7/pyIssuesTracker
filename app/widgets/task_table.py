@@ -126,6 +126,7 @@ class ProgressBarDelegate(QStyledItemDelegate):
 class TaskTable(QTableWidget):
     tarea_doble_click = pyqtSignal(int)
     tarea_abrir_url = pyqtSignal(int, str)
+    tarea_mover_proyecto = pyqtSignal(int)  # issue_id a copiar/mover de proyecto
     cambio_rapido = pyqtSignal(int, str, int)  # issue_id, tipo, valor
     due_date_cambiada = pyqtSignal(int, str)  # issue_id, due_date
     columnas_cambiadas = pyqtSignal()  # visibilidad de columnas modificada
@@ -492,6 +493,10 @@ class TaskTable(QTableWidget):
             menu = QMenu(self)
             self._add_copy_url_action(menu, issue_url)
             menu.addSeparator()
+            action_move = menu.addAction("Mover a otro proyecto...")
+            action_move.triggered.connect(
+                lambda checked, iid=issue_id: self.tarea_mover_proyecto.emit(iid)
+            )
             action_open = menu.addAction("Abrir en Redmine")
             action_open.triggered.connect(lambda checked, iid=issue_id, url=issue_url:
                                            self.tarea_abrir_url.emit(iid, url))
