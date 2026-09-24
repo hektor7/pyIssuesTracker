@@ -32,6 +32,7 @@ class RedmineIssue:
     project_name: str = ""
     assigned_to_id: int = 0
     assigned_to_name: str = ""
+    author_id: int = 0
     author_name: str = ""
     created_on: str = ""
     updated_on: str = ""
@@ -43,6 +44,57 @@ class RedmineIssue:
     category_name: str = ""
     attachments: list["RedmineAttachment"] = field(default_factory=list)
     custom_fields: dict[int, Any] = field(default_factory=dict)
+    journals: list["RedmineJournal"] = field(default_factory=list)
+
+    @property
+    def participant_ids(self) -> list[int]:
+        """Ids de los usuarios implicados en la tarea, sin duplicados.
+
+        Unión (en orden de inserción) de author_id, assigned_to_id y los
+        autores de los journals, excluyendo los ids 0 (sin usuario).
+        """
+        ids: list[int] = []
+        seen: set[int] = set()
+        for uid in (self.author_id, self.assigned_to_id):
+            if uid and uid not in seen:
+                seen.add(uid)
+                ids.append(uid)
+        for j in self.journals:
+            if j.user_id and j.user_id not in seen:
+                seen.add(j.user_id)
+                ids.append(j.user_id)
+        return ids
+
+    def roles_for_user(self, user_id: int) -> set[str]:
+        """Roles de implicación de un usuario en la tarea.
+
+        Devuelve un subconjunto de {"creador", "actualizador", "participante"}:
+        - "creador": el usuario es el autor del issue.
+        - "actualizador": el usuario es autor de cualquier journal.
+        - "participante": el usuario es autor de algún journal con notas,
+          o es el asignado actual.
+        """
+        roles: set[str] = set()
+        if user_id and user_id == self.author_id:
+            roles.add("creador")
+        journal_author_ids = {j.user_id for j in self.journals if j.user_id}
+        if user_id in journal_author_ids:
+            roles.add("actualizador")
+            if any(j.user_id == user_id and j.notes for j in self.journals):
+                roles.add("participante")
+        if user_id and user_id == self.assigned_to_id:
+            roles.add("participante")
+        return roles
+
+    def matches_user_filter(self, user_ids: set[int], roles: set[str]) -> bool:
+        """Indica si la tarea cumple el filtro por usuarios implicados.
+
+        True si algún uid de user_ids cumple alguno de los roles seleccionados.
+        Si user_ids está vacío, la dimensión usuarios no restringe (True).
+        """
+        if not user_ids:
+            return True
+        return any(self.roles_for_user(uid) & roles for uid in user_ids)
 
 
 @dataclass
@@ -97,9 +149,10 @@ class RedmineTracker:
 @dataclass
 class RedmineJournal:
     id: int
-    user_name: str
-    notes: str
-    created_on: str
+    user_id: int = 0
+    user_name: str = ""
+    notes: str = ""
+    created_on: str = ""
 
 
 @dataclass
@@ -393,15 +446,21 @@ class RedmineClient:
         assigned_to_id: int | str | list | None = None,
         due_date_from: str | None = None,
         due_date_to: str | None = None,
+        created_on_from: str | None = None,
+        created_on_to: str | None = None,
+        include_journals: bool = False,
         current_user_id: int = 0,
         limit: int = REDMINE_PAGE_LIMIT,
         offset: int = 0,
     ) -> list[RedmineIssue]:
+        include = "attachments"
+        if include_journals:
+            include += ",journals"
         params: dict[str, Any] = {
             "limit": limit,
             "offset": offset,
             "sort": "updated_on:desc",
-            "include": "attachments",
+            "include": include,
         }
         # Normalizar project_id: lista vacía o None → sin filtro; lista de 1 → escalar a int
         multiple_projects: list[int] | None = None
@@ -447,6 +506,17 @@ class RedmineClient:
             params["due_date"] = f">={due_date_from}"
         elif due_date_to:
             params["due_date"] = f"<={due_date_to}"
+
+        # Filtro por fecha de creación (misma sintaxis que due_date)
+        if created_on_from and created_on_to:
+            if created_on_from == created_on_to:
+                params["created_on"] = f"={created_on_from}"
+            else:
+                params["created_on"] = f"><{created_on_from}|{created_on_to}"
+        elif created_on_from:
+            params["created_on"] = f">={created_on_from}"
+        elif created_on_to:
+            params["created_on"] = f"<={created_on_to}"
 
         # Multi-proyecto: una petición por proyecto, fusionando sin duplicados
         issues: list[RedmineIssue] = []
@@ -501,6 +571,7 @@ class RedmineClient:
             project_name=i.get("project", {}).get("name", ""),
             assigned_to_id=i.get("assigned_to", {}).get("id", 0) if i.get("assigned_to") else 0,
             assigned_to_name=i.get("assigned_to", {}).get("name", "") if i.get("assigned_to") else "",
+            author_id=i.get("author", {}).get("id", 0) if i.get("author") else 0,
             author_name=i.get("author", {}).get("name", ""),
             created_on=i.get("created_on", ""),
             updated_on=i.get("updated_on", ""),
@@ -512,7 +583,26 @@ class RedmineClient:
             category_name=i.get("category", {}).get("name", ""),
             attachments=cls._parse_attachments(i.get("attachments", [])),
             custom_fields=cls._parse_custom_fields(i.get("custom_fields", [])),
+            journals=cls._parse_journals(i.get("journals", [])),
         )
+
+    @staticmethod
+    def _parse_journals(journals_raw: list) -> list[RedmineJournal]:
+        """Convierte el array journals de la API en una lista de RedmineJournal.
+
+        Conserva TODOS los journals, incluidos los que no tienen notas
+        (cambios de atributos), para poder clasificar el rol "actualizador".
+        """
+        journals = []
+        for j in journals_raw:
+            journals.append(RedmineJournal(
+                id=j.get("id", 0),
+                user_id=(j.get("user") or {}).get("id", 0),
+                user_name=(j.get("user") or {}).get("name", ""),
+                notes=j.get("notes", ""),
+                created_on=j.get("created_on", ""),
+            ))
+        return journals
 
     @staticmethod
     def _parse_custom_fields(custom_fields_raw: list) -> dict[int, Any]:

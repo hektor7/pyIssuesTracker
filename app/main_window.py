@@ -4,16 +4,16 @@ import os
 import subprocess
 import tempfile
 import webbrowser
-from datetime import date
+from datetime import date, datetime
 
 from urllib.parse import urljoin
 
-from PyQt6.QtCore import QTimer, QUrl
+from PyQt6.QtCore import QTimer, QUrl, Qt
 from PyQt6.QtGui import QAction, QDesktopServices
 from PyQt6.QtWidgets import (
     QMainWindow, QVBoxLayout, QWidget, QStatusBar,
     QMessageBox, QMenuBar, QMenu, QApplication,
-    QDialog, QLabel, QDialogButtonBox,
+    QDialog, QLabel, QDialogButtonBox, QFileDialog,
 )
 
 from app import __version__
@@ -32,6 +32,8 @@ from app.dialogs.task_dialog import TaskDialog
 from app.dialogs.reject_dialog import RejectDialog
 from app.dialogs.assign_dialog import AssignDialog
 from app.dialogs.complete_dialog import CompleteDialog
+from app.dialogs.report_dialog import ReportDialog
+from app.services.report_generator import ReportGenerator, REPORT_COLUMNS
 from app.tray_icon import TrayManager
 from app.utils.constants import APP_DISPLAY_NAME
 from app.widgets.searchable_combo import make_searchable_combo, update_completer_model
@@ -197,6 +199,7 @@ class MainWindow(QMainWindow):
         self._toolbar.completar_clicked.connect(self._completar_tarea)
         self._toolbar.rechazar_clicked.connect(self._rechazar_tarea)
         self._toolbar.refrescar_clicked.connect(self._cargar_issues)
+        self._toolbar.informe_clicked.connect(self._generar_informe)
         self._toolbar.configuracion_clicked.connect(self._abrir_configuracion)
 
     def _apply_menu_style(self):
@@ -512,6 +515,157 @@ class MainWindow(QMainWindow):
                     self._known_issue_ids[None] = {iss["id"] for iss in issues_dict}
         except RedmineError as e:
             self._status_indicator.set_connected(False, str(e))
+
+    # ================================================================
+    # Informe ODS
+    # ================================================================
+
+    def _report_users(self) -> list[tuple[int, str]]:
+        """Usuarios implicables en el informe (miembros de los proyectos en filtro).
+
+        Si el FilterBar tiene proyectos seleccionados, usa esos; si no, usa
+        todos los proyectos cargados. Deduplica por user_id > 0.
+        """
+        if not self._redmine:
+            return []
+        project_ids = self._filter_bar.selected_project_ids
+        if not project_ids:
+            project_ids = [pid for pid, _ in self._projects]
+        members: list[tuple[int, str]] = []
+        for pid in project_ids:
+            try:
+                mbs = self._redmine.get_project_memberships(pid)
+                members.extend([(m.user_id, m.user_name) for m in mbs if m.user_id])
+            except RedmineError:
+                continue
+        seen: set[int] = set()
+        unique: list[tuple[int, str]] = []
+        for mid, mname in members:
+            if mid not in seen:
+                seen.add(mid)
+                unique.append((mid, mname))
+        return unique
+
+    def _generar_informe(self):
+        """Genera un informe ODS con los filtros elegidos en el ReportDialog."""
+        if not self._redmine:
+            QMessageBox.warning(self, "Sin conexión", "Conéctate primero a Redmine.")
+            return
+
+        users = self._report_users()
+        preselected = [pid for pid in self._filter_bar.selected_project_ids if pid > 0]
+
+        dlg = ReportDialog(self._projects, users, preselected, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        project_ids = dlg.selected_project_ids or None
+        try:
+            issues = self._redmine.get_issues(
+                project_id=project_ids,
+                status_filter="*",
+                created_on_from=dlg.created_from,
+                created_on_to=dlg.created_to,
+                include_journals=True,
+                current_user_id=self._current_user_id,
+            )
+        except RedmineError as e:
+            QMessageBox.critical(self, "Error",
+                                 f"No se pudieron obtener las tareas:\n{str(e)}")
+            return
+
+        # Filtro client-side por usuarios implicados y rol
+        user_ids = set(dlg.selected_user_ids)
+        roles = set(dlg.selected_roles)
+        filtered = [iss for iss in issues if iss.matches_user_filter(user_ids, roles)]
+
+        if not filtered:
+            QMessageBox.information(
+                self, "Sin resultados",
+                "Ninguna tarea cumple los filtros seleccionados.",
+            )
+            return
+
+        default_name = f"informe_{datetime.now():%Y%m%d_%H%M}.ods"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Guardar informe", default_name, "Hoja de cálculo ODF (*.ods)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".ods"):
+            path += ".ods"
+
+        try:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                generator = ReportGenerator(REPORT_COLUMNS, sheet_name="Informe")
+                for row in self._compose_report_rows(filtered):
+                    generator.add_row(row)
+                generator.write(path)
+            finally:
+                QApplication.restoreOverrideCursor()
+        except Exception as e:
+            QMessageBox.critical(self, "Error",
+                                 f"No se pudo generar el informe:\n{str(e)}")
+            return
+
+        QMessageBox.information(self, "Informe generado",
+                                f"Informe guardado en:\n{path}")
+
+    def _compose_report_rows(self, issues) -> list[list]:
+        """Construye las filas del informe alineadas con REPORT_COLUMNS."""
+        rows: list[list] = []
+        for iss in issues:
+            rows.append([
+                iss.id,
+                self._project_full_names.get(iss.project_id, iss.project_name),
+                iss.tracker_name,
+                iss.subject,
+                iss.status_name,
+                iss.priority_name,
+                iss.assigned_to_name,
+                iss.author_name,
+                self._parse_iso_date(iss.created_on),
+                self._parse_iso_date(iss.start_date),
+                self._parse_iso_date(iss.due_date),
+                iss.done_ratio,
+                iss.category_name,
+                self._parse_iso_date(iss.updated_on),
+                self._implicated_users(iss),
+            ])
+        return rows
+
+    @staticmethod
+    def _parse_iso_date(value: str):
+        """Convierte una cadena ISO (fecha o datetime) a datetime.date.
+
+        Acepta tanto "2026-01-01" como "2026-01-01T10:00:00Z". Si el valor
+        está vacío o no es una fecha válida, devuelve "".
+        """
+        if not value:
+            return ""
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return ""
+
+    @staticmethod
+    def _implicated_users(issue) -> str:
+        """Nombres de los usuarios implicados en una tarea, unidos por ', '.
+
+        Construye un mapa {user_id: user_name} desde el autor, el asignado y
+        los autores de los journals, y une los nombres de participant_ids en
+        orden, sin duplicados. Si no hay ninguno, devuelve "".
+        """
+        names: dict[int, str] = {}
+        if issue.author_id:
+            names[issue.author_id] = issue.author_name
+        if issue.assigned_to_id:
+            names[issue.assigned_to_id] = issue.assigned_to_name
+        for j in issue.journals:
+            if j.user_id and j.user_id not in names:
+                names[j.user_id] = j.user_name
+        return ", ".join(names[uid] for uid in issue.participant_ids if uid in names)
 
     # ================================================================
     # Acciones de tareas

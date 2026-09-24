@@ -7,9 +7,15 @@ from PyQt6.QtWidgets import QMainWindow, QDialog, QMessageBox
 
 from app.dialogs.assign_dialog import AssignDialog
 from app.dialogs.complete_dialog import CompleteDialog
+from app.dialogs.report_dialog import ReportDialog
 from app.dialogs.task_dialog import TaskDialog as RealTaskDialog
 from app.main_window import MainWindow
-from app.services.redmine_client import RedmineError, RedmineValidationError, RedmineProject
+from app.services.redmine_client import (
+    RedmineError, RedmineValidationError, RedmineProject,
+    RedmineIssue, RedmineJournal,
+)
+from app.services.report_generator import ReportGenerator, REPORT_COLUMNS
+from app.widgets.toolbar import IssueToolbar
 
 
 @pytest.fixture
@@ -1240,3 +1246,357 @@ class TestCargarPriorities:
 
         w._task_table.set_priorities.assert_called_once_with([])
         w._filter_bar.populate_priorities.assert_not_called()
+
+
+# ================================================================
+# Tests del informe ODS (tarea 6.1 del cambio add-ods-report-export)
+# ================================================================
+
+
+class TestInformeToolbar:
+    """Conexión del botón 'Informe' (tarea 6.1.1)."""
+
+    def test_toolbar_emite_informe_clicked_al_disparar_la_accion(self, qapp):
+        """La acción 'Informe' del IssueToolbar debe emitir informe_clicked."""
+        toolbar = IssueToolbar()
+        received = []
+        toolbar.informe_clicked.connect(lambda: received.append(True))
+        action = next(a for a in toolbar.actions() if a.text() == "Informe")
+        action.trigger()
+        assert received == [True]
+
+    def test_toolbar_mantiene_acciones_existentes(self, qapp):
+        """El toolbar conserva todas las acciones previas además de 'Informe'."""
+        toolbar = IssueToolbar()
+        texts = [a.text() for a in toolbar.actions()]
+        for expected in ["Nuevo", "Editar", "Asignar", "Completada",
+                         "Rechazar", "Refrescar", "Config", "Informe"]:
+            assert expected in texts
+
+    def test_main_window_conecta_informe_clicked_a_generar_informe(self, qapp):
+        """En MainWindow, informe_clicked debe estar conectado a _generar_informe."""
+        with (
+            patch.object(MainWindow, "_setup_menu"),
+            patch.object(MainWindow, "_setup_tray"),
+            patch.object(MainWindow, "_restore_window_state"),
+            patch.object(MainWindow, "_generar_informe") as mock_gen,
+        ):
+            w = MainWindow()  # _setup_ui real: crea el toolbar y conecta las señales
+            w._redmine = MagicMock()
+            w._task_table = MagicMock()
+            w._tray = MagicMock()
+            w._filter_bar = MagicMock()
+
+            # Cadena completa: acción real del toolbar -> señal -> _generar_informe
+            action = next(a for a in w._toolbar.actions() if a.text() == "Informe")
+            action.trigger()
+            mock_gen.assert_called_once()
+
+            # La señal también puede emitirse directamente
+            w._toolbar.informe_clicked.emit()
+            assert mock_gen.call_count == 2
+
+
+class TestGenerarInforme:
+    """Flujo de _generar_informe (tareas 6.1.2 a 6.1.6)."""
+
+    def _setup(self, main_window):
+        """Prepara el MainWindow para el flujo del informe."""
+        main_window._filter_bar.selected_project_ids = []
+        main_window._project_full_names = {}
+
+    def _issue(self, **overrides):
+        """Crea un RedmineIssue real con valores por defecto."""
+        defaults = dict(
+            id=1, subject="Tarea de prueba", description="",
+            start_date="2026-01-05", due_date="2026-01-20",
+            status_name="Nueva", status_id=1, done_ratio=30,
+            project_id=1, project_name="Proyecto A",
+            assigned_to_id=2, assigned_to_name="Luis",
+            author_id=1, author_name="Ana",
+            created_on="2026-01-01T10:00:00Z",
+            updated_on="2026-01-10T12:00:00Z",
+            tracker_id=1, tracker_name="Tarea",
+            priority_id=2, priority_name="Normal",
+            category_id=0, category_name="",
+        )
+        defaults.update(overrides)
+        return RedmineIssue(**defaults)
+
+    def _make_report_dialog(self, **overrides):
+        """Crea un MagicMock que simula ReportDialog aceptado."""
+        dlg = MagicMock(spec=ReportDialog)
+        dlg.exec.return_value = QDialog.DialogCode.Accepted
+        dlg.selected_project_ids = []
+        dlg.selected_user_ids = []
+        dlg.selected_roles = ["creador", "actualizador", "participante"]
+        dlg.created_from = None
+        dlg.created_to = None
+        for key, value in overrides.items():
+            setattr(dlg, key, value)
+        return dlg
+
+    def _patch_report_dialog(self, dlg_mock):
+        """Parchea ReportDialog preservando DialogCode para comparaciones."""
+        mock_class = MagicMock(spec=ReportDialog)
+        mock_class.DialogCode = QDialog.DialogCode
+        mock_class.return_value = dlg_mock
+        return patch("app.main_window.ReportDialog", mock_class)
+
+    def test_sin_conexion_muestra_warning_y_no_abre_dialogo(self, main_window):
+        """Con _redmine=None, _generar_informe avisa y no abre el diálogo."""
+        main_window._redmine = None
+
+        with (
+            patch("app.main_window.ReportDialog") as mock_report_cls,
+            patch("app.main_window.QMessageBox") as mock_msgbox,
+        ):
+            main_window._generar_informe()
+
+        mock_msgbox.warning.assert_called_once()
+        call_args = mock_msgbox.warning.call_args
+        assert "Sin conexión" in call_args[0][1]
+        mock_report_cls.assert_not_called()
+
+    def test_cancelar_dialogo_no_consulta_ni_escribe(self, main_window):
+        """Si el diálogo se cancela, no se consulta ni se escribe nada."""
+        self._setup(main_window)
+        dlg = self._make_report_dialog()
+        dlg.exec.return_value = QDialog.DialogCode.Rejected
+
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName") as mock_save,
+            patch("app.main_window.ReportGenerator") as mock_gen_cls,
+        ):
+            main_window._generar_informe()
+
+        main_window._redmine.get_issues.assert_not_called()
+        mock_save.assert_not_called()
+        mock_gen_cls.assert_not_called()
+
+    def test_flujo_feliz_escribe_ods(self, main_window, tmp_path):
+        """Flujo feliz: consulta con journals y rango, escribe el ODS y confirma."""
+        self._setup(main_window)
+        issue_con_journals = self._issue(
+            id=1,
+            journals=[RedmineJournal(id=1, user_id=3, user_name="Marta", notes="revisado")],
+        )
+        issue_sin_journals = self._issue(id=2, subject="Otra tarea")
+        main_window._redmine.get_issues.return_value = [issue_con_journals, issue_sin_journals]
+
+        dlg = self._make_report_dialog(
+            selected_project_ids=[1],
+            created_from="2026-01-01",
+            created_to="2026-03-31",
+        )
+        path = str(tmp_path / "informe")  # sin extensión: debe añadirse .ods
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox") as mock_msgbox,
+        ):
+            main_window._generar_informe()
+
+        # (a) get_issues con journals y con el rango created_on del diálogo
+        main_window._redmine.get_issues.assert_called_once_with(
+            project_id=[1],
+            status_filter="*",
+            created_on_from="2026-01-01",
+            created_on_to="2026-03-31",
+            include_journals=True,
+            current_user_id=2,
+        )
+        # (b) se escribe en la ruta con extensión .ods
+        mock_gen_cls.assert_called_once_with(REPORT_COLUMNS, sheet_name="Informe")
+        mock_gen_cls.return_value.write.assert_called_once_with(
+            str(tmp_path / "informe.ods")
+        )
+        # (c) confirmación de éxito
+        mock_msgbox.information.assert_called_once()
+        call_args = mock_msgbox.information.call_args
+        assert "Informe guardado" in call_args[0][2]
+
+    def test_ruta_con_extension_ods_no_se_duplica(self, main_window, tmp_path):
+        """Si la ruta ya termina en .ods, no se añade la extensión otra vez."""
+        self._setup(main_window)
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog()
+        path = str(tmp_path / "informe.ods")
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox"),
+        ):
+            main_window._generar_informe()
+
+        mock_gen_cls.return_value.write.assert_called_once_with(path)
+
+    def test_sin_resultados_no_escribe_fichero(self, main_window):
+        """Si ninguna tarea cumple el filtro de usuarios, avisa y no escribe."""
+        self._setup(main_window)
+        # El usuario 999 no participa en la tarea -> no cumple el filtro
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog(
+            selected_user_ids=[999],
+            selected_roles=["creador"],
+        )
+
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName") as mock_save,
+            patch("app.main_window.ReportGenerator") as mock_gen_cls,
+            patch("app.main_window.QMessageBox") as mock_msgbox,
+        ):
+            main_window._generar_informe()
+
+        mock_msgbox.information.assert_called_once()
+        call_args = mock_msgbox.information.call_args
+        assert "Sin resultados" in call_args[0][1]
+        mock_save.assert_not_called()
+        mock_gen_cls.assert_not_called()
+
+    def test_error_de_consulta_muestra_critical(self, main_window):
+        """Si get_issues lanza RedmineError, se muestra critical y no se escribe."""
+        self._setup(main_window)
+        main_window._redmine.get_issues.side_effect = RedmineError("boom")
+        dlg = self._make_report_dialog()
+
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName") as mock_save,
+            patch("app.main_window.ReportGenerator") as mock_gen_cls,
+            patch("app.main_window.QMessageBox") as mock_msgbox,
+        ):
+            main_window._generar_informe()
+
+        mock_msgbox.critical.assert_called_once()
+        call_args = mock_msgbox.critical.call_args
+        assert "No se pudieron obtener las tareas" in call_args[0][2]
+        mock_save.assert_not_called()
+        mock_gen_cls.assert_not_called()
+
+    def test_error_de_escritura_muestra_critical(self, main_window, tmp_path):
+        """Si write() lanza OSError, se muestra critical y no information."""
+        self._setup(main_window)
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog()
+        path = str(tmp_path / "informe.ods")
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        mock_gen_cls.return_value.write.side_effect = OSError("disk full")
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox") as mock_msgbox,
+            patch("app.main_window.QApplication.setOverrideCursor"),
+            patch("app.main_window.QApplication.restoreOverrideCursor") as mock_restore,
+        ):
+            main_window._generar_informe()
+
+        mock_msgbox.critical.assert_called_once()
+        call_args = mock_msgbox.critical.call_args
+        assert "No se pudo generar el informe" in call_args[0][2]
+        mock_msgbox.information.assert_not_called()
+        mock_restore.assert_called_once()
+
+    def test_pasa_proyectos_preseleccionados_al_dialogo(self, main_window):
+        """Los proyectos preseleccionados del filtro se pasan al ReportDialog."""
+        self._setup(main_window)
+        main_window._filter_bar.selected_project_ids = [1, 2]
+        dlg = self._make_report_dialog()
+        dlg.exec.return_value = QDialog.DialogCode.Rejected
+
+        with self._patch_report_dialog(dlg) as mock_report_cls:
+            main_window._generar_informe()
+
+        mock_report_cls.assert_called_once()
+        args = mock_report_cls.call_args
+        assert args[0][2] == [1, 2]
+
+
+class TestComposeReportRows:
+    """Tests unitarios de _compose_report_rows (tarea 6.1.7)."""
+
+    def _issue(self, **overrides):
+        """Crea un RedmineIssue real con valores por defecto."""
+        defaults = dict(
+            id=1, subject="Tarea de prueba", description="",
+            start_date="2026-01-05", due_date="2026-01-20",
+            status_name="Nueva", status_id=1, done_ratio=30,
+            project_id=1, project_name="Proyecto A",
+            assigned_to_id=2, assigned_to_name="Luis",
+            author_id=1, author_name="Ana",
+            created_on="2026-01-01T10:00:00Z",
+            updated_on="2026-01-10T12:00:00Z",
+            tracker_id=1, tracker_name="Tarea",
+            priority_id=2, priority_name="Normal",
+            category_id=0, category_name="",
+        )
+        defaults.update(overrides)
+        return RedmineIssue(**defaults)
+
+    def test_alinea_con_report_columns(self, main_window):
+        """Cada fila debe tener tantos valores como REPORT_COLUMNS, en orden."""
+        main_window._project_full_names = {1: "Proyecto A"}
+        iss = self._issue()
+        rows = main_window._compose_report_rows([iss])
+        assert len(rows) == 1
+        row = rows[0]
+        assert len(row) == len(REPORT_COLUMNS)
+        assert row[0] == 1                      # ID
+        assert row[1] == "Proyecto A"           # Proyecto (nombre completo)
+        assert row[2] == "Tarea"                # Tracker
+        assert row[3] == "Tarea de prueba"      # Título
+        assert row[4] == "Nueva"                # Estado
+        assert row[5] == "Normal"               # Prioridad
+        assert row[6] == "Luis"                 # Asignado a
+        assert row[7] == "Ana"                  # Creado por
+        assert row[11] == 30                    # % Progreso
+        assert row[12] == ""                    # Categoría
+        assert row[14] == "Ana, Luis"           # Usuarios implicados
+
+    def test_convierte_fechas_iso_a_date(self, main_window):
+        """Las fechas ISO se convierten a datetime.date; las vacías quedan como ''."""
+        main_window._project_full_names = {}
+        iss = self._issue(
+            created_on="2026-01-01T10:00:00Z",
+            start_date="2026-01-05",
+            due_date="",
+            updated_on="2026-01-10T12:30:00Z",
+        )
+        row = main_window._compose_report_rows([iss])[0]
+        assert row[8] == date(2026, 1, 1)    # Fecha de creación
+        assert row[9] == date(2026, 1, 5)    # Fecha de inicio
+        assert row[10] == ""                 # Fecha de fin vacía
+        assert row[13] == date(2026, 1, 10)  # Última modificación
+
+    def test_progreso_numerico(self, main_window):
+        """El % Progreso debe ser numérico (int)."""
+        main_window._project_full_names = {}
+        iss = self._issue(done_ratio=75)
+        row = main_window._compose_report_rows([iss])[0]
+        assert row[11] == 75
+        assert isinstance(row[11], int)
+
+    def test_usuarios_implicados_sin_duplicados(self, main_window):
+        """La lista de usuarios implicados no repite nombres y se une con ', '."""
+        main_window._project_full_names = {}
+        iss = RedmineIssue(
+            id=1, subject="T",
+            author_id=1, author_name="Ana",
+            assigned_to_id=2, assigned_to_name="Luis",
+            journals=[
+                RedmineJournal(id=1, user_id=1, user_name="Ana", notes="comentario"),
+                RedmineJournal(id=2, user_id=3, user_name="Marta", notes=""),
+            ],
+        )
+        row = main_window._compose_report_rows([iss])[0]
+        assert row[14] == "Ana, Luis, Marta"

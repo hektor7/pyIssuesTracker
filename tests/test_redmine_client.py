@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch, mock_open
 import pytest
 
 from app.services.redmine_client import (
-    RedmineClient, RedmineAttachment, RedmineIssue,
+    RedmineClient, RedmineAttachment, RedmineIssue, RedmineJournal,
     RedmineValidationError, RedmineError, RedmineProject,
 )
 
@@ -556,3 +556,282 @@ class TestGetCurrentUserId:
         result = client.get_current_user_id()  # Segunda llamada
         assert result == 42
         client._get.assert_not_called()  # No debe llamar a la API
+
+
+# ================================================================
+# Tests para journals, participantes y filtro por fecha de creación
+# ================================================================
+
+
+def _issue_json_with_journals():
+    """Issue JSON de ejemplo con author, assigned_to y journals."""
+    return {
+        "id": 101,
+        "subject": "Tarea con journals",
+        "author": {"id": 1, "name": "Ana"},
+        "assigned_to": {"id": 2, "name": "Luis"},
+        "journals": [
+            {
+                "id": 11,
+                "user": {"id": 3, "name": "Carlos"},
+                "notes": "He avanzado con esto",
+                "created_on": "2026-09-01T10:00:00Z",
+            },
+            {
+                "id": 12,
+                "user": {"id": 4, "name": "Diana"},
+                "notes": "",
+                "created_on": "2026-09-02T11:00:00Z",
+            },
+        ],
+    }
+
+
+class TestParseJournals:
+    """Tests para el parseo de journals en _issue_from_json (tarea 1.1)."""
+
+    def test_parse_journals_with_user_id_and_notes(self, client):
+        """_issue_from_json debe parsear journals con user_id, user_name, notes y created_on."""
+        issue = client._issue_from_json(_issue_json_with_journals())
+        assert len(issue.journals) == 2
+        first = issue.journals[0]
+        assert isinstance(first, RedmineJournal)
+        assert first.id == 11
+        assert first.user_id == 3
+        assert first.user_name == "Carlos"
+        assert first.notes == "He avanzado con esto"
+        assert first.created_on == "2026-09-01T10:00:00Z"
+
+    def test_parse_journals_keeps_journals_without_notes(self, client):
+        """Los journals sin notas (notes='') deben conservarse en la lista."""
+        issue = client._issue_from_json(_issue_json_with_journals())
+        second = issue.journals[1]
+        assert second.id == 12
+        assert second.user_id == 4
+        assert second.user_name == "Diana"
+        assert second.notes == ""
+        assert second.created_on == "2026-09-02T11:00:00Z"
+
+    def test_parse_journals_defaults_when_missing(self, client):
+        """Un journal sin user ni notes debe usar valores por defecto."""
+        raw = {
+            "id": 1,
+            "subject": "S",
+            "author": {"id": 1, "name": "Ana"},
+            "journals": [{"id": 21}],
+        }
+        issue = client._issue_from_json(raw)
+        assert len(issue.journals) == 1
+        j = issue.journals[0]
+        assert j.user_id == 0
+        assert j.user_name == ""
+        assert j.notes == ""
+        assert j.created_on == ""
+
+    def test_parse_no_journals_returns_empty_list(self, client):
+        """Sin clave journals, la lista debe quedar vacía."""
+        raw = {"id": 1, "subject": "S", "author": {"id": 1, "name": "Ana"}}
+        issue = client._issue_from_json(raw)
+        assert issue.journals == []
+
+
+class TestParticipantIds:
+    """Tests para RedmineIssue.participant_ids (tarea 1.2)."""
+
+    def test_participant_ids_union_without_duplicates(self):
+        """participant_ids = unión sin duplicados de autor, asignado y autores de journals."""
+        issue = RedmineIssue(
+            id=1,
+            subject="S",
+            author_id=1,
+            assigned_to_id=2,
+            journals=[
+                RedmineJournal(id=11, user_id=3, user_name="Carlos", notes="n", created_on=""),
+                RedmineJournal(id=12, user_id=1, user_name="Ana", notes="", created_on=""),
+                RedmineJournal(id=13, user_id=2, user_name="Luis", notes="", created_on=""),
+            ],
+        )
+        assert issue.participant_ids == [1, 2, 3]
+
+    def test_participant_ids_excludes_zeros(self):
+        """Los ids 0 (sin autor/asignado) deben excluirse."""
+        issue = RedmineIssue(
+            id=1,
+            subject="S",
+            author_id=0,
+            assigned_to_id=0,
+            journals=[RedmineJournal(id=11, user_id=0, user_name="", notes="", created_on="")],
+        )
+        assert issue.participant_ids == []
+
+    def test_participant_ids_empty_by_default(self):
+        """Sin participantes, la lista debe estar vacía."""
+        issue = RedmineIssue(id=1, subject="S")
+        assert issue.participant_ids == []
+
+
+class TestRolesForUser:
+    """Tests para RedmineIssue.roles_for_user (tarea 2.4)."""
+
+    def _issue(self, author_id=1, assigned_to_id=2, journals=None):
+        return RedmineIssue(
+            id=1,
+            subject="S",
+            author_id=author_id,
+            assigned_to_id=assigned_to_id,
+            journals=journals or [],
+        )
+
+    def test_creator_role(self):
+        """El autor del issue tiene el rol 'creador'."""
+        issue = self._issue(author_id=1)
+        assert issue.roles_for_user(1) == {"creador"}
+
+    def test_updater_role_from_journal_without_notes(self):
+        """Autor de un journal sin notas es 'actualizador' (cambio de atributos)."""
+        issue = self._issue(journals=[
+            RedmineJournal(id=11, user_id=3, user_name="Carlos", notes="", created_on=""),
+        ])
+        assert issue.roles_for_user(3) == {"actualizador"}
+
+    def test_participant_role_from_journal_with_notes(self):
+        """Autor de un journal con notas es 'participante' (y 'actualizador')."""
+        issue = self._issue(journals=[
+            RedmineJournal(id=11, user_id=3, user_name="Carlos", notes="Comentario", created_on=""),
+        ])
+        assert issue.roles_for_user(3) == {"actualizador", "participante"}
+
+    def test_participant_role_from_assignment(self):
+        """El asignado actual es 'participante' aunque no tenga journals."""
+        issue = self._issue(assigned_to_id=2)
+        assert issue.roles_for_user(2) == {"participante"}
+
+    def test_creator_with_multiple_roles(self):
+        """Un usuario puede acumular varios roles (creador + actualizador + participante)."""
+        issue = self._issue(author_id=1, assigned_to_id=1, journals=[
+            RedmineJournal(id=11, user_id=1, user_name="Ana", notes="Comentario", created_on=""),
+        ])
+        assert issue.roles_for_user(1) == {"creador", "actualizador", "participante"}
+
+    def test_unrelated_user_has_no_roles(self):
+        """Un usuario sin relación con el issue no tiene roles."""
+        issue = self._issue()
+        assert issue.roles_for_user(99) == set()
+
+
+class TestMatchesUserFilter:
+    """Tests para RedmineIssue.matches_user_filter (tarea 2.4)."""
+
+    def _issue(self, author_id=1, assigned_to_id=2, journals=None):
+        return RedmineIssue(
+            id=1,
+            subject="S",
+            author_id=author_id,
+            assigned_to_id=assigned_to_id,
+            journals=journals or [],
+        )
+
+    def test_matches_creator(self):
+        issue = self._issue(author_id=1)
+        assert issue.matches_user_filter({1}, {"creador"})
+
+    def test_does_not_match_wrong_role(self):
+        issue = self._issue(author_id=1)
+        assert not issue.matches_user_filter({1}, {"participante"})
+
+    def test_matches_updater(self):
+        issue = self._issue(journals=[
+            RedmineJournal(id=11, user_id=3, user_name="Carlos", notes="", created_on=""),
+        ])
+        assert issue.matches_user_filter({3}, {"actualizador"})
+
+    def test_matches_participant_by_comment(self):
+        issue = self._issue(journals=[
+            RedmineJournal(id=11, user_id=3, user_name="Carlos", notes="Comentario", created_on=""),
+        ])
+        assert issue.matches_user_filter({3}, {"participante"})
+
+    def test_matches_participant_by_assignment(self):
+        issue = self._issue(assigned_to_id=2)
+        assert issue.matches_user_filter({2}, {"participante"})
+
+    def test_matches_any_of_several_users(self):
+        """Basta con que un usuario cumpla alguno de los roles seleccionados."""
+        issue = self._issue(author_id=1, assigned_to_id=2)
+        assert issue.matches_user_filter({5, 2}, {"creador", "participante"})
+
+    def test_empty_user_ids_does_not_restrict(self):
+        """Con user_ids vacío, la dimensión usuarios no restringe."""
+        issue = self._issue(author_id=1)
+        assert issue.matches_user_filter(set(), {"creador"})
+        assert issue.matches_user_filter(set(), {"actualizador"})
+
+
+class TestGetIssuesCreatedOn:
+    """Tests para el filtro created_on en get_issues (tarea 1.3)."""
+
+    @pytest.fixture
+    def client(self):
+        c = RedmineClient("https://redmine.example.com", "token")
+        c._get = MagicMock(return_value={"issues": []})
+        return c
+
+    def test_created_on_range(self, client):
+        """Con from y to debe enviar created_on=><from|to."""
+        client.get_issues(created_on_from="2026-01-01", created_on_to="2026-03-31")
+        _, kwargs = client._get.call_args
+        assert kwargs["params"]["created_on"] == "><2026-01-01|2026-03-31"
+
+    def test_created_on_from_only(self, client):
+        """Solo con from debe enviar created_on>=from."""
+        client.get_issues(created_on_from="2026-01-01")
+        _, kwargs = client._get.call_args
+        assert kwargs["params"]["created_on"] == ">=2026-01-01"
+
+    def test_created_on_to_only(self, client):
+        """Solo con to debe enviar created_on<=to."""
+        client.get_issues(created_on_to="2026-03-31")
+        _, kwargs = client._get.call_args
+        assert kwargs["params"]["created_on"] == "<=2026-03-31"
+
+    def test_created_on_equal_dates(self, client):
+        """Con from == to debe enviar created_on=fecha."""
+        client.get_issues(created_on_from="2026-01-01", created_on_to="2026-01-01")
+        _, kwargs = client._get.call_args
+        assert kwargs["params"]["created_on"] == "=2026-01-01"
+
+    def test_created_on_absent_by_default(self, client):
+        """Sin fechas no debe enviar el parámetro created_on."""
+        client.get_issues()
+        _, kwargs = client._get.call_args
+        assert "created_on" not in kwargs["params"]
+
+
+class TestGetIssuesIncludeJournals:
+    """Tests para include_journals en get_issues (tarea 1.4)."""
+
+    @pytest.fixture
+    def client(self):
+        c = RedmineClient("https://redmine.example.com", "token")
+        c._get = MagicMock(return_value={"issues": []})
+        return c
+
+    def test_include_journals_adds_journals_to_include(self, client):
+        """include_journals=True debe añadir 'journals' al parámetro include."""
+        client.get_issues(include_journals=True)
+        _, kwargs = client._get.call_args
+        assert kwargs["params"]["include"] == "attachments,journals"
+
+    def test_include_attachments_by_default(self, client):
+        """Por defecto include debe seguir siendo 'attachments'."""
+        client.get_issues()
+        _, kwargs = client._get.call_args
+        assert kwargs["params"]["include"] == "attachments"
+
+    def test_include_journals_parses_journals_in_response(self, client):
+        """Con include_journals=True, los journals de la respuesta se parsean en el issue."""
+        client._get.return_value = {"issues": [_issue_json_with_journals()]}
+        issues = client.get_issues(include_journals=True)
+        assert len(issues) == 1
+        assert len(issues[0].journals) == 2
+        assert issues[0].journals[0].user_id == 3

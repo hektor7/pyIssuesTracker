@@ -14,6 +14,7 @@ class IssueToolbar(QToolBar):
     completar_clicked = pyqtSignal()
     rechazar_clicked = pyqtSignal()
     refrescar_clicked = pyqtSignal()
+    informe_clicked = pyqtSignal()
     configuracion_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -58,6 +59,11 @@ class IssueToolbar(QToolBar):
         self._action_refrescar.setToolTip("Refrescar lista de tareas")
         self._action_refrescar.triggered.connect(self.refrescar_clicked.emit)
         self.addAction(self._action_refrescar)
+
+        self._action_informe = QAction(_icon(style.StandardPixmap.SP_FileDialogListView), "Informe", self)
+        self._action_informe.setToolTip("Generar informe ODS")
+        self._action_informe.triggered.connect(self.informe_clicked.emit)
+        self.addAction(self._action_informe)
 
         spacer = QWidget()
         spacer.setMinimumWidth(16)
