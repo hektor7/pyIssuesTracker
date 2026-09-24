@@ -33,7 +33,7 @@ from app.dialogs.reject_dialog import RejectDialog
 from app.dialogs.assign_dialog import AssignDialog
 from app.dialogs.complete_dialog import CompleteDialog
 from app.dialogs.report_dialog import ReportDialog
-from app.services.report_generator import ReportGenerator, REPORT_COLUMNS
+from app.services.report_generator import ReportGenerator, REPORT_FIELDS
 from app.tray_icon import TrayManager
 from app.utils.constants import APP_DISPLAY_NAME
 from app.widgets.searchable_combo import make_searchable_combo, update_completer_model
@@ -598,8 +598,10 @@ class MainWindow(QMainWindow):
         try:
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             try:
-                generator = ReportGenerator(REPORT_COLUMNS, sheet_name="Informe")
-                for row in self._compose_report_rows(filtered):
+                field_keys = dlg.selected_fields
+                columns = [label for key, label in REPORT_FIELDS if key in set(field_keys)]
+                generator = ReportGenerator(columns, sheet_name="Informe")
+                for row in self._compose_report_rows(filtered, field_keys):
                     generator.add_row(row)
                 generator.write(path)
             finally:
@@ -612,28 +614,114 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Informe generado",
                                 f"Informe guardado en:\n{path}")
 
-    def _compose_report_rows(self, issues) -> list[list]:
-        """Construye las filas del informe alineadas con REPORT_COLUMNS."""
+    def _compose_report_rows(self, issues, field_keys) -> list[list]:
+        """Construye las filas del informe alineadas con las claves de campo dadas.
+
+        Para cada tarea, produce un valor por cada clave de field_keys (en el
+        orden recibido, que es el orden canónico de REPORT_FIELDS).
+        """
         rows: list[list] = []
         for iss in issues:
-            rows.append([
-                iss.id,
-                self._project_full_names.get(iss.project_id, iss.project_name),
-                iss.tracker_name,
-                iss.subject,
-                iss.status_name,
-                iss.priority_name,
-                iss.assigned_to_name,
-                iss.author_name,
-                self._parse_iso_date(iss.created_on),
-                self._parse_iso_date(iss.start_date),
-                self._parse_iso_date(iss.due_date),
-                iss.done_ratio,
-                iss.category_name,
-                self._parse_iso_date(iss.updated_on),
-                self._implicated_users(iss),
-            ])
+            rows.append([self._report_field_value(iss, key) for key in field_keys])
         return rows
+
+    def _report_field_value(self, issue, key):
+        """Devuelve el valor de un campo del informe para una tarea."""
+        if key == "id":
+            return issue.id
+        if key == "proyecto":
+            return self._project_full_names.get(issue.project_id, issue.project_name)
+        if key == "tracker":
+            return issue.tracker_name
+        if key == "titulo":
+            return issue.subject
+        if key == "estado":
+            return issue.status_name
+        if key == "prioridad":
+            return issue.priority_name
+        if key == "asignado_a":
+            return issue.assigned_to_name
+        if key == "creado_por":
+            return issue.author_name
+        if key == "fecha_creacion":
+            return self._parse_iso_date(issue.created_on)
+        if key == "fecha_inicio":
+            return self._parse_iso_date(issue.start_date)
+        if key == "fecha_fin":
+            return self._parse_iso_date(issue.due_date)
+        if key == "progreso":
+            return issue.done_ratio
+        if key == "categoria":
+            return issue.category_name
+        if key == "ultima_modificacion":
+            return self._parse_iso_date(issue.updated_on)
+        if key == "usuarios_implicados":
+            return self._implicated_users(issue)
+        if key == "url":
+            return urljoin(
+                self._settings.redmine_url.rstrip("/") + "/",
+                f"issues/{issue.id}",
+            )
+        if key == "comentarios":
+            return self._compose_comments(issue)
+        return ""
+
+    @staticmethod
+    def _compose_comments(issue) -> str:
+        """Comentarios de una tarea: journals con notas, uno por línea.
+
+        Cada comentario se formatea como '[DD/MM/YYYY HH:MM] Autor: texto' y
+        se unen con un salto de línea. Si no hay comentarios, devuelve "".
+        """
+        lines: list[str] = []
+        for j in issue.journals:
+            if not j.notes or not j.notes.strip():
+                continue
+            timestamp = MainWindow._format_comment_timestamp(j.created_on)
+            if timestamp:
+                lines.append(f"[{timestamp}] {j.user_name}: {j.notes}")
+            else:
+                lines.append(f"{j.user_name}: {j.notes}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_comment_timestamp(iso: str) -> str:
+        """Formatea un timestamp ISO 8601 como 'DD/MM/YYYY HH:MM'.
+
+        Si el timestamp solo tiene fecha, devuelve 'DD/MM/YYYY'. Devuelve ""
+        si iso está vacío o no es parseable.
+        """
+        if not iso or not iso.strip():
+            return ""
+        s = iso.strip()
+        try:
+            if "T" in s:
+                date_part, time_part = s.split("T", 1)
+            elif " " in s:
+                date_part, time_part = s.split(" ", 1)
+            else:
+                date_part, time_part = s, ""
+
+            parts = date_part.split("-")
+            if len(parts) != 3 or not all(p.isdigit() for p in parts):
+                return iso
+            display_date = f"{parts[2]}/{parts[1]}/{parts[0]}"
+
+            if time_part:
+                time_clean = time_part
+                for sep in ("+", "-", "Z"):
+                    idx = time_clean.find(sep)
+                    if idx > 0:
+                        time_clean = time_clean[:idx]
+                        break
+                time_parts = time_clean.split(":")
+                if len(time_parts) >= 2:
+                    return f"{display_date} {time_parts[0]}:{time_parts[1]}"
+                return f"{display_date} {time_clean}"
+
+            return display_date
+        except (ValueError, IndexError):
+            return iso
 
     @staticmethod
     def _parse_iso_date(value: str):

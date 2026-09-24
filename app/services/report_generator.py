@@ -18,13 +18,34 @@ _MIN_COL_WIDTH_CM = 3.0
 _MAX_COL_WIDTH_CM = 40.0
 _CHAR_WIDTH_CM = 0.22
 
-# Columnas del informe de tareas (orden establecido en el cambio add-ods-report-export)
-REPORT_COLUMNS = [
-    "ID", "Proyecto", "Tracker", "Título", "Estado", "Prioridad",
-    "Asignado a", "Creado por", "Fecha de creación", "Fecha de inicio",
-    "Fecha de fin", "% Progreso", "Categoría", "Última modificación",
-    "Usuarios implicados",
+# Catálogo de campos del informe: (clave, etiqueta) en orden canónico
+# (cambio informe-campos-seleccionables). El orden define el orden de las
+# columnas en el ODS y el orden de las casillas del diálogo.
+REPORT_FIELDS = [
+    ("id", "ID"),
+    ("proyecto", "Proyecto"),
+    ("tracker", "Tracker"),
+    ("titulo", "Título"),
+    ("estado", "Estado"),
+    ("prioridad", "Prioridad"),
+    ("asignado_a", "Asignado a"),
+    ("creado_por", "Creado por"),
+    ("fecha_creacion", "Fecha de creación"),
+    ("fecha_inicio", "Fecha de inicio"),
+    ("fecha_fin", "Fecha de fin"),
+    ("progreso", "% Progreso"),
+    ("categoria", "Categoría"),
+    ("ultima_modificacion", "Última modificación"),
+    ("usuarios_implicados", "Usuarios implicados"),
+    ("url", "URL"),
+    ("comentarios", "Comentarios"),
 ]
+
+# Claves de todos los campos (comportamiento por defecto: todos marcados)
+DEFAULT_FIELD_KEYS = [key for key, _ in REPORT_FIELDS]
+
+# Etiquetas de todas las columnas (compatibilidad con la firma antigua)
+REPORT_COLUMNS = [label for _, label in REPORT_FIELDS]
 
 
 def sanitize_sheet_name(name: str, max_length: int = 31) -> str:
@@ -149,5 +170,11 @@ class ReportGenerator:
             cell.addElement(text.P(text=str(value)))
             return cell
         cell = table.TableCell(valuetype="string")
-        cell.addElement(text.P(text=str(value)))
+        text_value = str(value)
+        if isinstance(value, str) and "\n" in value:
+            # Texto multilínea: un párrafo (text:P) por línea en la misma celda
+            for line in value.split("\n"):
+                cell.addElement(text.P(text=line))
+        else:
+            cell.addElement(text.P(text=text_value))
         return cell

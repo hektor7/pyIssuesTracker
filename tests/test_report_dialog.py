@@ -11,6 +11,7 @@ from PyQt6.QtCore import QDate
 from PyQt6.QtWidgets import QDialog
 
 from app.dialogs.report_dialog import ReportDialog
+from app.services.report_generator import REPORT_FIELDS, DEFAULT_FIELD_KEYS
 
 
 PROJECTS = [(1, "Proyecto A"), (2, "Proyecto B"), (3, "Proyecto C")]
@@ -177,3 +178,46 @@ class TestSeleccionTodos:
         """Al seleccionar proyectos concretos se devuelven sus IDs."""
         dialog._projects_combo.set_selected_ids([2])
         assert dialog.selected_project_ids == [2]
+
+
+class TestCamposInforme:
+    """(g) Selección de campos del informe (cambio informe-campos-seleccionables)."""
+
+    def test_grupo_con_17_casillas_todas_marcadas(self, dialog):
+        """El grupo 'Campos del informe' tiene una casilla por campo, todas marcadas."""
+        assert len(dialog._field_checkboxes) == 17
+        assert set(dialog._field_checkboxes) == {key for key, _ in REPORT_FIELDS}
+        for cb in dialog._field_checkboxes.values():
+            assert cb.isChecked()
+
+    def test_selected_fields_devuelve_claves_en_orden_canonico(self, dialog):
+        """selected_fields devuelve todas las claves en el orden de REPORT_FIELDS."""
+        assert dialog.selected_fields == DEFAULT_FIELD_KEYS
+
+    def test_desmarcar_reduce_selected_fields(self, dialog):
+        """Al desmarcar casillas, selected_fields se reduce y mantiene el orden."""
+        dialog._field_checkboxes["url"].setChecked(False)
+        dialog._field_checkboxes["comentarios"].setChecked(False)
+        assert dialog.selected_fields == [
+            key for key, _ in REPORT_FIELDS if key not in ("url", "comentarios")
+        ]
+        assert len(dialog.selected_fields) == 15
+
+    def test_sin_campos_marcados_no_acepta(self, dialog):
+        """Si se desmarcan todos los campos, accept() avisa y no acepta."""
+        for cb in dialog._field_checkboxes.values():
+            cb.setChecked(False)
+
+        with patch("app.dialogs.report_dialog.QMessageBox.warning") as mock_warning:
+            dialog.accept()
+
+        mock_warning.assert_called_once()
+        assert dialog.result() != QDialog.DialogCode.Accepted
+
+    def test_con_campos_marcados_acepta(self, dialog):
+        """Con campos marcados, accept() acepta sin warning."""
+        with patch("app.dialogs.report_dialog.QMessageBox.warning") as mock_warning:
+            dialog.accept()
+
+        mock_warning.assert_not_called()
+        assert dialog.result() == QDialog.DialogCode.Accepted

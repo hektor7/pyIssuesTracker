@@ -14,7 +14,9 @@ from app.services.redmine_client import (
     RedmineError, RedmineValidationError, RedmineProject,
     RedmineIssue, RedmineJournal,
 )
-from app.services.report_generator import ReportGenerator, REPORT_COLUMNS
+from app.services.report_generator import (
+    ReportGenerator, REPORT_COLUMNS, REPORT_FIELDS, DEFAULT_FIELD_KEYS,
+)
 from app.widgets.toolbar import IssueToolbar
 
 
@@ -1330,6 +1332,7 @@ class TestGenerarInforme:
         dlg.selected_project_ids = []
         dlg.selected_user_ids = []
         dlg.selected_roles = ["creador", "actualizador", "participante"]
+        dlg.selected_fields = DEFAULT_FIELD_KEYS
         dlg.created_from = None
         dlg.created_to = None
         for key, value in overrides.items():
@@ -1521,6 +1524,37 @@ class TestGenerarInforme:
         args = mock_report_cls.call_args
         assert args[0][2] == [1, 2]
 
+    def test_generar_informe_usa_solo_las_etiquetas_de_los_campos_marcados(
+        self, main_window, tmp_path
+    ):
+        """ReportGenerator recibe solo las etiquetas de los campos marcados."""
+        self._setup(main_window)
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog(
+            selected_fields=["id", "titulo", "url", "comentarios"],
+        )
+        path = str(tmp_path / "informe.ods")
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox"),
+        ):
+            main_window._generar_informe()
+
+        mock_gen_cls.assert_called_once_with(
+            ["ID", "Título", "URL", "Comentarios"], sheet_name="Informe"
+        )
+        # Las filas añadidas están alineadas con las claves marcadas
+        rows_added = [
+            call.args[0]
+            for call in mock_gen_cls.return_value.add_row.call_args_list
+        ]
+        assert len(rows_added) == 1
+        assert len(rows_added[0]) == 4
+
 
 class TestComposeReportRows:
     """Tests unitarios de _compose_report_rows (tarea 6.1.7)."""
@@ -1544,10 +1578,10 @@ class TestComposeReportRows:
         return RedmineIssue(**defaults)
 
     def test_alinea_con_report_columns(self, main_window):
-        """Cada fila debe tener tantos valores como REPORT_COLUMNS, en orden."""
+        """Cada fila debe tener tantos valores como campos por defecto, en orden."""
         main_window._project_full_names = {1: "Proyecto A"}
         iss = self._issue()
-        rows = main_window._compose_report_rows([iss])
+        rows = main_window._compose_report_rows([iss], DEFAULT_FIELD_KEYS)
         assert len(rows) == 1
         row = rows[0]
         assert len(row) == len(REPORT_COLUMNS)
@@ -1572,7 +1606,7 @@ class TestComposeReportRows:
             due_date="",
             updated_on="2026-01-10T12:30:00Z",
         )
-        row = main_window._compose_report_rows([iss])[0]
+        row = main_window._compose_report_rows([iss], DEFAULT_FIELD_KEYS)[0]
         assert row[8] == date(2026, 1, 1)    # Fecha de creación
         assert row[9] == date(2026, 1, 5)    # Fecha de inicio
         assert row[10] == ""                 # Fecha de fin vacía
@@ -1582,7 +1616,7 @@ class TestComposeReportRows:
         """El % Progreso debe ser numérico (int)."""
         main_window._project_full_names = {}
         iss = self._issue(done_ratio=75)
-        row = main_window._compose_report_rows([iss])[0]
+        row = main_window._compose_report_rows([iss], DEFAULT_FIELD_KEYS)[0]
         assert row[11] == 75
         assert isinstance(row[11], int)
 
@@ -1598,5 +1632,93 @@ class TestComposeReportRows:
                 RedmineJournal(id=2, user_id=3, user_name="Marta", notes=""),
             ],
         )
-        row = main_window._compose_report_rows([iss])[0]
+        row = main_window._compose_report_rows([iss], DEFAULT_FIELD_KEYS)[0]
         assert row[14] == "Ana, Luis, Marta"
+
+    def test_subconjunto_de_campos_produce_filas_alineadas(self, main_window):
+        """Con un subconjunto de claves, cada fila tiene un valor por clave en orden."""
+        main_window._project_full_names = {1: "Proyecto A"}
+        iss = self._issue()
+        field_keys = ["id", "titulo", "estado", "progreso"]
+        rows = main_window._compose_report_rows([iss], field_keys)
+        assert len(rows) == 1
+        assert rows[0] == [1, "Tarea de prueba", "Nueva", 30]
+
+    def test_url_correcta(self, main_window):
+        """El campo url es la URL absoluta {redmine_url}/issues/{id}."""
+        main_window._project_full_names = {}
+        main_window._settings.redmine_url = "https://redmine.example.com"
+        iss = self._issue(id=42)
+        row = main_window._compose_report_rows([iss], ["url"])[0]
+        assert row[0] == "https://redmine.example.com/issues/42"
+
+    def test_url_correcta_con_slash_final(self, main_window):
+        """La URL se construye igual si redmine_url termina en '/'."""
+        main_window._project_full_names = {}
+        main_window._settings.redmine_url = "https://redmine.example.com/"
+        iss = self._issue(id=7)
+        row = main_window._compose_report_rows([iss], ["url"])[0]
+        assert row[0] == "https://redmine.example.com/issues/7"
+
+    def test_comentarios_formateados_con_autor_y_fecha_hora(self, main_window):
+        """Los comentarios se formatean '[DD/MM/YYYY HH:MM] Autor: texto' y se unen con \\n."""
+        main_window._project_full_names = {}
+        iss = RedmineIssue(
+            id=1, subject="T",
+            journals=[
+                RedmineJournal(
+                    id=1, user_id=3, user_name="Marta",
+                    notes="revisado", created_on="2026-01-05T10:30:00Z",
+                ),
+                RedmineJournal(
+                    id=2, user_id=4, user_name="Luis",
+                    notes="ok", created_on="2026-01-06T09:15:00Z",
+                ),
+            ],
+        )
+        row = main_window._compose_report_rows([iss], ["comentarios"])[0]
+        assert row[0] == (
+            "[05/01/2026 10:30] Marta: revisado\n"
+            "[06/01/2026 09:15] Luis: ok"
+        )
+
+    def test_comentarios_vacios_sin_journals(self, main_window):
+        """Sin journals, la celda de comentarios es una cadena vacía."""
+        main_window._project_full_names = {}
+        iss = RedmineIssue(id=1, subject="T", journals=[])
+        row = main_window._compose_report_rows([iss], ["comentarios"])[0]
+        assert row[0] == ""
+
+    def test_comentarios_ignora_journals_sin_notas(self, main_window):
+        """Los journals sin notas (o solo espacios) no cuentan como comentarios."""
+        main_window._project_full_names = {}
+        iss = RedmineIssue(
+            id=1, subject="T",
+            journals=[
+                RedmineJournal(
+                    id=1, user_id=3, user_name="Marta",
+                    notes="", created_on="2026-01-05T10:30:00Z",
+                ),
+                RedmineJournal(
+                    id=2, user_id=4, user_name="Luis",
+                    notes="   ", created_on="2026-01-06T09:15:00Z",
+                ),
+            ],
+        )
+        row = main_window._compose_report_rows([iss], ["comentarios"])[0]
+        assert row[0] == ""
+
+    def test_comentario_sin_hora_muestra_solo_fecha(self, main_window):
+        """Si el timestamp solo tiene fecha, el comentario muestra '[DD/MM/YYYY]'."""
+        main_window._project_full_names = {}
+        iss = RedmineIssue(
+            id=1, subject="T",
+            journals=[
+                RedmineJournal(
+                    id=1, user_id=3, user_name="Marta",
+                    notes="sin hora", created_on="2026-02-10",
+                ),
+            ],
+        )
+        row = main_window._compose_report_rows([iss], ["comentarios"])[0]
+        assert row[0] == "[10/02/2026] Marta: sin hora"

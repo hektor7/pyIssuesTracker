@@ -7,9 +7,10 @@ from datetime import date
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QGroupBox, QHBoxLayout, QCheckBox,
-    QDateEdit, QDialogButtonBox, QMessageBox,
+    QDateEdit, QDialogButtonBox, QMessageBox, QGridLayout,
 )
 
+from app.services.report_generator import REPORT_FIELDS
 from app.widgets.multi_select_combo import MultiSelectCombo
 
 # Roles de implicación disponibles en el informe
@@ -41,6 +42,7 @@ class ReportDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
+        layout.addWidget(self._build_fields_group())
         layout.addWidget(self._build_users_group())
         layout.addWidget(self._build_dates_group())
         layout.addWidget(self._build_projects_group())
@@ -51,6 +53,25 @@ class ReportDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _build_fields_group(self) -> QGroupBox:
+        """Grupo 'Campos del informe': un QCheckBox por campo del catálogo.
+
+        Todas las casillas aparecen marcadas por defecto (comportamiento
+        actual: el informe incluye todos los campos).
+        """
+        group = QGroupBox("Campos del informe")
+        grid = QGridLayout(group)
+        grid.setSpacing(6)
+
+        self._field_checkboxes: dict[str, QCheckBox] = {}
+        for index, (key, label) in enumerate(REPORT_FIELDS):
+            cb = QCheckBox(label)
+            cb.setChecked(True)
+            self._field_checkboxes[key] = cb
+            grid.addWidget(cb, index // 2, index % 2)
+
+        return group
 
     def _build_users_group(self) -> QGroupBox:
         """Grupo 'Usuarios implicados': multiselect + checkboxes de rol."""
@@ -167,12 +188,23 @@ class ReportDialog(QDialog):
             return []
         return ids
 
+    @property
+    def selected_fields(self) -> list[str]:
+        """Claves de los campos marcados, en el orden canónico de REPORT_FIELDS."""
+        return [key for key, _ in REPORT_FIELDS if self._field_checkboxes[key].isChecked()]
+
     # ================================================================
     # Validación
     # ================================================================
 
     def accept(self):
         """Valida los filtros antes de aceptar el diálogo."""
+        if not self.selected_fields:
+            QMessageBox.warning(
+                self, "Campos requeridos",
+                "Selecciona al menos un campo para el informe.",
+            )
+            return
         if not self.selected_roles:
             QMessageBox.warning(
                 self, "Roles requeridos",

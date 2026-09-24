@@ -5,7 +5,18 @@ import pytest
 from odf import table
 from odf.opendocument import load
 
-from app.services.report_generator import ReportGenerator, sanitize_sheet_name
+from app.services.report_generator import (
+    ReportGenerator, sanitize_sheet_name,
+    REPORT_FIELDS, DEFAULT_FIELD_KEYS, REPORT_COLUMNS,
+)
+
+# Claves canónicas de los 17 campos del informe (cambio informe-campos-seleccionables)
+EXPECTED_FIELD_KEYS = [
+    "id", "proyecto", "tracker", "titulo", "estado", "prioridad",
+    "asignado_a", "creado_por", "fecha_creacion", "fecha_inicio",
+    "fecha_fin", "progreso", "categoria", "ultima_modificacion",
+    "usuarios_implicados", "url", "comentarios",
+]
 
 
 class TestSanitizeSheetName:
@@ -40,6 +51,24 @@ class TestSanitizeSheetName:
     def test_removes_control_characters(self):
         """Los caracteres de control deben eliminarse."""
         assert sanitize_sheet_name("Info\r\n\x00\x07rme") == "Informe"
+
+
+class TestReportFields:
+    """Tests del catálogo REPORT_FIELDS (tarea 1.1)."""
+
+    def test_report_fields_contiene_17_claves_en_orden_canonico(self):
+        """REPORT_FIELDS debe tener las 17 claves en el orden canónico."""
+        assert [key for key, _ in REPORT_FIELDS] == EXPECTED_FIELD_KEYS
+        assert len(REPORT_FIELDS) == 17
+
+    def test_default_field_keys_incluye_todas_las_claves(self):
+        """DEFAULT_FIELD_KEYS debe contener todas las claves en orden canónico."""
+        assert DEFAULT_FIELD_KEYS == EXPECTED_FIELD_KEYS
+
+    def test_report_columns_son_las_etiquetas_por_compatibilidad(self):
+        """REPORT_COLUMNS debe seguir siendo la lista de etiquetas (17)."""
+        assert REPORT_COLUMNS == [label for _, label in REPORT_FIELDS]
+        assert len(REPORT_COLUMNS) == 17
 
 
 class TestReportGenerator:
@@ -126,3 +155,29 @@ class TestReportGenerator:
             content = zf.read("content.xml").decode("utf-8")
         assert "Informe 2026 Final" in content
         assert "Informe [2026]: Final?" not in content
+
+    def test_multiline_value_genera_varios_parrafos_en_la_celda(self, tmp_path):
+        """Un valor str con \\n debe generar un text:P por línea en la misma celda."""
+        gen = ReportGenerator(["Comentarios"])
+        gen.add_row(["línea 1\nlínea 2\nlínea 3"])
+        out = tmp_path / "informe.ods"
+        gen.write(str(out))
+        with zipfile.ZipFile(out) as zf:
+            content = zf.read("content.xml").decode("utf-8")
+        # 1 párrafo de la cabecera + 3 líneas de la celda de datos
+        assert content.count("<text:p") == 4
+        # Las tres líneas se conservan en el contenido
+        assert "línea 1" in content
+        assert "línea 2" in content
+        assert "línea 3" in content
+
+    def test_multiline_value_no_rompe_valores_simples(self, tmp_path):
+        """Un valor sin \\n sigue generando un único text:P en la celda."""
+        gen = ReportGenerator(["Texto"])
+        gen.add_row(["Hola"])
+        out = tmp_path / "informe.ods"
+        gen.write(str(out))
+        with zipfile.ZipFile(out) as zf:
+            content = zf.read("content.xml").decode("utf-8")
+        # 1 párrafo de cabecera + 1 párrafo de datos
+        assert content.count("<text:p") == 2
