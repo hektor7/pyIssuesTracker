@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 
 from app.utils.constants import REDMINE_REQUEST_TIMEOUT, REDMINE_PAGE_LIMIT
+from app.utils.projects import build_project_full_names
 
 
 @dataclass
@@ -14,6 +15,7 @@ class RedmineProject:
     identifier: str
     parent_id: int | None = None
     children: list["RedmineProject"] = field(default_factory=list)
+    full_name: str = ""
 
 
 @dataclass
@@ -359,8 +361,11 @@ class RedmineClient:
             if not projects:
                 break
             all_projects.extend(projects)
-        # Ordenar alfabéticamente
-        all_projects.sort(key=lambda x: x.name.lower())
+        # Componer el nombre completo (jerarquía) y ordenar por él
+        full_names = build_project_full_names(all_projects)
+        for p in all_projects:
+            p.full_name = full_names[p.id]
+        all_projects.sort(key=lambda x: x.full_name.lower())
         return all_projects
 
     # ---- Trackers ----

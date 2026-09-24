@@ -9,7 +9,7 @@ from app.dialogs.assign_dialog import AssignDialog
 from app.dialogs.complete_dialog import CompleteDialog
 from app.dialogs.task_dialog import TaskDialog as RealTaskDialog
 from app.main_window import MainWindow
-from app.services.redmine_client import RedmineError, RedmineValidationError
+from app.services.redmine_client import RedmineError, RedmineValidationError, RedmineProject
 
 
 @pytest.fixture
@@ -1118,3 +1118,125 @@ class TestCustomFieldsEnviados:
 
         kwargs = main_window._redmine.update_issue.call_args.kwargs
         assert kwargs["custom_fields"] == {2: "otro"}
+
+
+class TestCargarProyectosNombresCompletos:
+    """_cargar_proyectos() debe usar el nombre completo del proyecto (D2)."""
+
+    def test_cargar_proyectos_usa_nombre_completo_y_mapa_por_id(self, main_window):
+        """_projects contiene el nombre completo y _project_full_names mapea id -> nombre."""
+        w = main_window
+        w._settings.filter_fixed = False
+        projects = [
+            RedmineProject(id=1, name="Raíz", identifier="raiz", parent_id=None, full_name="Raíz"),
+            RedmineProject(id=2, name="Hijo", identifier="hijo", parent_id=1, full_name="Raíz > Hijo"),
+        ]
+        w._redmine.get_all_projects.return_value = projects
+
+        w._cargar_proyectos()
+
+        assert w._projects == [(1, "Raíz"), (2, "Raíz > Hijo")]
+        assert w._project_full_names == {1: "Raíz", 2: "Raíz > Hijo"}
+        # La jerarquía se mantiene igual que antes
+        assert w._project_hierarchy == {1: None, 2: 1}
+        w._filter_bar.populate_projects.assert_called_once_with(
+            w._projects, w._project_hierarchy
+        )
+
+    def test_cargar_proyectos_fallback_a_name_si_full_name_vacio(self, main_window):
+        """Si full_name está vacío, se usa p.name como nombre visible."""
+        w = main_window
+        w._settings.filter_fixed = False
+        projects = [
+            RedmineProject(id=1, name="Solo", identifier="solo", parent_id=None, full_name=""),
+        ]
+        w._redmine.get_all_projects.return_value = projects
+
+        w._cargar_proyectos()
+
+        assert w._projects == [(1, "Solo")]
+        assert w._project_full_names == {1: "Solo"}
+
+
+class TestCargarIssuesNombresCompletos:
+    """_cargar_issues() debe usar el nombre completo y añadir priority_id (D3)."""
+
+    def _setup(self, main_window):
+        w = main_window
+        w._status_indicator = MagicMock()
+        w._update_task_table_context = MagicMock()
+        w._project_full_names = {1: "Raíz > Hijo"}
+        w._filter_bar.selected_project_ids = []
+        w._filter_bar.selected_status = "open"
+        w._filter_bar.selected_priority = 0
+        w._filter_bar.selected_category = 0
+        w._filter_bar.selected_date_from = None
+        w._filter_bar.selected_date_to = None
+        w._filter_bar.selected_assigned_to = []
+        return w
+
+    def _issue(self):
+        return SimpleNamespace(
+            id=42, subject="Tarea", description="", start_date="", due_date="",
+            status_name="Abierta", status_id=1, done_ratio=0,
+            project_id=1, project_name="Hijo",
+            assigned_to_id=0, assigned_to_name="", author_name="",
+            tracker_name="", priority_name="Alta", priority_id=4,
+            category_name="", created_on="", updated_on="",
+        )
+
+    def test_cargar_issues_usa_nombre_completo_y_priority_id(self, main_window):
+        """El dict pasado a set_issues lleva project_name completo y priority_id."""
+        w = self._setup(main_window)
+        w._redmine.get_issues.return_value = [self._issue()]
+
+        MainWindow._cargar_issues(w)
+
+        w._task_table.set_issues.assert_called_once()
+        issues_dict = w._task_table.set_issues.call_args.args[0]
+        assert issues_dict[0]["project_name"] == "Raíz > Hijo"
+        assert issues_dict[0]["priority_id"] == 4
+
+    def test_cargar_issues_fallback_a_project_name_si_no_hay_mapa(self, main_window):
+        """Sin entrada en _project_full_names, se usa iss.project_name."""
+        w = self._setup(main_window)
+        w._project_full_names = {}
+        w._redmine.get_issues.return_value = [self._issue()]
+
+        MainWindow._cargar_issues(w)
+
+        issues_dict = w._task_table.set_issues.call_args.args[0]
+        assert issues_dict[0]["project_name"] == "Hijo"
+        assert issues_dict[0]["priority_id"] == 4
+
+
+class TestCargarPriorities:
+    """W7: _cargar_priorities() debe propagar el catálogo a la tabla."""
+
+    def test_cargar_priorities_llama_set_priorities_con_catalogo(self, main_window):
+        """Con catálogo cargado, set_priorities recibe la lista (id, nombre)."""
+        w = main_window
+        w._redmine.get_issue_priorities.return_value = [
+            SimpleNamespace(id=1, name="Baja"),
+            SimpleNamespace(id=2, name="Normal"),
+            SimpleNamespace(id=3, name="Alta"),
+        ]
+
+        w._cargar_priorities()
+
+        w._task_table.set_priorities.assert_called_once_with(
+            [(1, "Baja"), (2, "Normal"), (3, "Alta")]
+        )
+        w._filter_bar.populate_priorities.assert_called_once_with(
+            [(1, "Baja"), (2, "Normal"), (3, "Alta")]
+        )
+
+    def test_cargar_priorities_error_llama_set_priorities_vacio(self, main_window):
+        """Si la API falla, set_priorities se invoca igualmente con lista vacía."""
+        w = main_window
+        w._redmine.get_issue_priorities.side_effect = RedmineError("boom")
+
+        w._cargar_priorities()
+
+        w._task_table.set_priorities.assert_called_once_with([])
+        w._filter_bar.populate_priorities.assert_not_called()

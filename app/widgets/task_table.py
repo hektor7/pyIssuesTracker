@@ -1,11 +1,11 @@
 from datetime import date
 
 from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QDate, QEvent, QRect
-from PyQt6.QtGui import QBrush, QColor, QPainter, QPalette, QPen
+from PyQt6.QtGui import QBrush, QColor, QPainter, QPalette, QPen, QPolygon
 from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QStyle, QApplication, QMenu, QDateEdit,
-    QStyledItemDelegate, QStyleOptionViewItem,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionHeader,
 )
 
 from app.utils.dates import iso_to_display, iso_datetime_to_display
@@ -123,6 +123,100 @@ class ProgressBarDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+class MultiSortHeaderView(QHeaderView):
+    """Cabecera que dibuja hasta dos indicadores de ordenación.
+
+    Guarda los criterios activos en `sort_keys` (máximo dos, el primero es el
+    primario) y sobrescribe `paintSection` para dibujar, tras el texto de la
+    sección, un triángulo verde para el criterio primario y uno verde claro
+    para el secundario. La punta apunta hacia arriba en ascendente y hacia
+    abajo en descendente.
+    """
+
+    COLOR_PRIMARY = QColor("#2e7d32")
+    COLOR_SECONDARY = QColor("#81c784")
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.sort_keys: list[tuple[int, Qt.SortOrder]] = []
+
+    def set_sort_keys(self, keys: list[tuple[int, Qt.SortOrder]]):
+        """Guarda los criterios de ordenación y fuerza el repintado."""
+        self.sort_keys = list(keys)
+        self.viewport().update()
+        self.update()
+
+    def paintSection(self, painter: QPainter, rect: QRect, logicalIndex: int):
+        """Pinta la sección por defecto y los triángulos de ordenación."""
+        super().paintSection(painter, rect, logicalIndex)
+
+        for points, color, _ascending in self.sort_triangle_specs(rect, logicalIndex):
+            self._draw_sort_triangle(painter, points, color)
+
+    def sort_triangle_specs(self, rect: QRect, logicalIndex: int) -> list[tuple[list[QPoint], QColor, bool]]:
+        """Devuelve las especificaciones de los triángulos de ordenación de una sección.
+
+        Cada tupla contiene los puntos del polígono, el color del triángulo y si la
+        punta apunta hacia arriba (ascendente). No dibuja nada, lo que permite
+        testear color y orientación de forma determinista.
+        """
+        positions = [
+            i for i, (col, _order) in enumerate(self.sort_keys)
+            if col == logicalIndex
+        ]
+        if not positions:
+            return []
+
+        opt = QStyleOptionHeader()
+        self.initStyleOption(opt)
+        opt.rect = rect
+        opt.section = logicalIndex
+        label_rect = self.style().subElementRect(
+            QStyle.SubElement.SE_HeaderLabel, opt, self
+        )
+
+        tri_w = 7
+        gap = 4
+        total_w = len(positions) * (tri_w + gap) - gap
+        if label_rect.width() <= 0 or label_rect.right() < rect.left():
+            # subElementRect no dio un rect fiable: alinear a la derecha de la sección
+            x = rect.right() - total_w - 2
+        else:
+            x = label_rect.right() + gap
+            # Si no cabe a la derecha del texto, alinear al borde derecho de la sección
+            if x + total_w > rect.right():
+                x = rect.right() - total_w - 2
+
+        specs: list[tuple[list[QPoint], QColor, bool]] = []
+        for pos in positions:
+            _col, order = self.sort_keys[pos]
+            ascending = order == Qt.SortOrder.AscendingOrder
+            color = self.COLOR_PRIMARY if pos == 0 else self.COLOR_SECONDARY
+            specs.append((self._triangle_points(x, rect, ascending), color, ascending))
+            x += tri_w + gap
+        return specs
+
+    @staticmethod
+    def _triangle_points(x: int, rect: QRect, ascending: bool) -> list[QPoint]:
+        """Puntos del triángulo pequeño centrado verticalmente en la sección."""
+        w = 7
+        h = 5
+        y = rect.y() + (rect.height() - h) // 2
+        if ascending:
+            return [QPoint(x, y + h), QPoint(x + w, y + h), QPoint(x + w // 2, y)]
+        return [QPoint(x, y), QPoint(x + w, y), QPoint(x + w // 2, y + h)]
+
+    @staticmethod
+    def _draw_sort_triangle(painter: QPainter, points: list[QPoint], color: QColor):
+        """Dibuja un triángulo pequeño centrado verticalmente en la sección."""
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(color))
+        painter.drawPolygon(QPolygon(points))
+        painter.restore()
+
+
 class TaskTable(QTableWidget):
     tarea_doble_click = pyqtSignal(int)
     tarea_abrir_url = pyqtSignal(int, str)
@@ -176,6 +270,19 @@ class TaskTable(QTableWidget):
     # Rol propio donde se guarda el id de la issue de cada fila
     ISSUE_ID_ROLE = Qt.ItemDataRole.UserRole + 1000
 
+    # Rol donde se guarda el rango semántico de prioridad (0 = mayor prioridad)
+    PRIORITY_RANK_ROLE = Qt.ItemDataRole.UserRole + 1001
+
+    # Fallback por nombre cuando no hay catálogo o falta el id de prioridad
+    _PRIORITY_NAME_RANK = {
+        "inmediata": 0, "immediate": 0,
+        "urgente": 1, "urgent": 1,
+        "alta": 2, "high": 2,
+        "normal": 3,
+        "baja": 4, "low": 4,
+    }
+    _PRIORITY_UNKNOWN_RANK = 5
+
     _BG_INMEDIATA = QColor(200, 0, 0)
     _BG_URGENTE = QColor(180, 20, 20)
 
@@ -189,10 +296,14 @@ class TaskTable(QTableWidget):
         self.setAlternatingRowColors(True)
         self.verticalHeader().setVisible(False)
         self.setShowGrid(True)
-        self.setSortingEnabled(True)
+        self.setSortingEnabled(False)
         self.verticalHeader().setDefaultSectionSize(28)
 
+        # Cabecera propia con hasta dos indicadores de ordenación
+        self.setHorizontalHeader(MultiSortHeaderView(Qt.Orientation.Horizontal, self))
         header = self.horizontalHeader()
+        header.setSortIndicatorShown(False)
+        header.sectionClicked.connect(self._on_header_clicked)
         header.setStretchLastSection(False)
         header.setSectionResizeMode(self.COL_ID, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_TRACKER, QHeaderView.ResizeMode.ResizeToContents)
@@ -227,6 +338,8 @@ class TaskTable(QTableWidget):
         self._issues: list[dict] = []
         self._issues_by_id: dict[int, dict] = {}
         self._statuses: list[tuple[int, str]] = []
+        self._priorities: list[tuple[int, str]] = []
+        self._priority_rank_by_id: dict[int, int] = {}
         self._current_user_id: int = 0
         self._frequent_people_ids: list[int] = []
         self._editing_issue_id: int | None = None
@@ -631,6 +744,7 @@ class TaskTable(QTableWidget):
 
         priority_item = QTableWidgetItem(issue.get("priority_name", ""))
         priority_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        priority_item.setData(self.PRIORITY_RANK_ROLE, self._priority_rank(issue))
         self._apply_issue_style(priority_item, issue)
         self.setItem(row, self.COL_PRIORITY, priority_item)
 
@@ -682,16 +796,11 @@ class TaskTable(QTableWidget):
     def set_issues(self, issues: list[dict]):
         """Repuebla la tabla de forma atómica, aislada de la ordenación activa."""
         header = self.horizontalHeader()
-        section = header.sortIndicatorSection()
-        order = header.sortIndicatorOrder()
+        sort_keys = list(header.sort_keys)
 
         self._issues = list(issues)
         self._issues_by_id = {int(issue["id"]): issue for issue in issues}
         self._editing_issue_id = None
-
-        # Desactivar la ordenación durante el poblado evita que Qt reordene
-        # las filas a mitad de la carga y mezcle celdas de distintas tareas.
-        self.setSortingEnabled(False)
 
         # Eliminar widgets de celda residuales (p. ej. QDateEdit de edición inline)
         for row in range(self.rowCount()):
@@ -705,10 +814,141 @@ class TaskTable(QTableWidget):
         for row, issue in enumerate(issues):
             self._populate_row(row, issue)
 
-        # Reactivar la ordenación y reaplicar la que estaba activa
-        self.setSortingEnabled(True)
-        if section >= 0:
-            self.sortItems(section, order)
+        # Reaplicar la ordenación activa (preserva criterios y direcciones)
+        if sort_keys:
+            self._apply_sort()
+
+    # ------------------------------------------------------------------
+    # Ordenación múltiple
+    # ------------------------------------------------------------------
+
+    def set_priorities(self, priorities: list[tuple[int, str]]):
+        """Guarda el catálogo de prioridades de Redmine para el orden semántico."""
+        self._priorities = list(priorities or [])
+        self._priority_rank_by_id = {
+            int(pid): len(self._priorities) - 1 - index
+            for index, (pid, _name) in enumerate(self._priorities)
+        }
+
+    def _priority_rank(self, issue: dict) -> int:
+        """Rango semántico de la prioridad de una issue (0 = mayor prioridad).
+
+        Usa el catálogo de Redmine por id cuando está disponible y, si no,
+        un fallback por nombre para los valores conocidos.
+        """
+        pid = issue.get("priority_id")
+        if pid is not None:
+            try:
+                rank = self._priority_rank_by_id.get(int(pid))
+            except (TypeError, ValueError):
+                rank = None
+            if rank is not None:
+                return rank
+        name = str(issue.get("priority_name", "") or "").casefold()
+        return self._PRIORITY_NAME_RANK.get(name, self._PRIORITY_UNKNOWN_RANK)
+
+    def _on_header_clicked(self, col: int):
+        """Actualiza los criterios de ordenación al hacer clic en una cabecera."""
+        if col == self.COL_URL:
+            return
+        header = self.horizontalHeader()
+        keys = list(header.sort_keys)
+        if keys and keys[0][0] == col:
+            # Primario: invertir dirección, conservar el secundario
+            new_order = (
+                Qt.SortOrder.DescendingOrder
+                if keys[0][1] == Qt.SortOrder.AscendingOrder
+                else Qt.SortOrder.AscendingOrder
+            )
+            keys[0] = (col, new_order)
+        elif len(keys) > 1 and keys[1][0] == col:
+            # Secundario: pasa a primario; el primario anterior pasa a secundario
+            keys = [(col, keys[1][1]), (keys[0][0], keys[0][1])]
+        else:
+            # Columna nueva: primario ascendente; el primario anterior pasa a secundario
+            old_primary = keys[0] if keys else None
+            keys = [(col, Qt.SortOrder.AscendingOrder)]
+            if old_primary is not None:
+                keys.append(old_primary)
+        header.set_sort_keys(keys)
+        self._apply_sort()
+
+    def _sort_key(self, issue: dict, col: int):
+        """Clave tipada por columna para la ordenación estable."""
+        if col == self.COL_ID:
+            try:
+                return int(issue.get("id", 0))
+            except (TypeError, ValueError):
+                return 0
+        if col == self.COL_PROGRESS:
+            try:
+                return int(issue.get("done_ratio", 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+        if col == self.COL_PRIORITY:
+            return self._priority_rank(issue)
+        if col == self.COL_START_DATE:
+            return issue.get("start_date", "") or ""
+        if col == self.COL_DUE_DATE:
+            return issue.get("due_date", "") or ""
+        if col == self.COL_CREATED:
+            return issue.get("created_on", "") or ""
+        if col == self.COL_UPDATED:
+            return issue.get("updated_on", "") or ""
+        text_field = {
+            self.COL_TRACKER: "tracker_name",
+            self.COL_PROJECT: "project_name",
+            self.COL_TITLE: "subject",
+            self.COL_STATUS: "status_name",
+            self.COL_ASSIGNED_TO: "assigned_to_name",
+            self.COL_CATEGORY: "category_name",
+        }.get(col)
+        if text_field is not None:
+            return str(issue.get(text_field, "") or "").casefold()
+        return ""
+
+    def _apply_sort(self):
+        """Ordena las filas según los criterios activos y repuebla la tabla.
+
+        Ordenación estable encadenada de menos a más significativa. No altera
+        `self._issues` ni `self._issues_by_id` (orden de inserción).
+        """
+        header = self.horizontalHeader()
+        keys = list(header.sort_keys)
+
+        ordered = list(self._issues)
+        if keys:
+            for col, order in reversed(keys):
+                reverse = order == Qt.SortOrder.DescendingOrder
+                ordered.sort(
+                    key=lambda issue, c=col: self._sort_key(issue, c),
+                    reverse=reverse,
+                )
+
+        # Eliminar widgets de celda residuales (igual que set_issues)
+        for row in range(self.rowCount()):
+            for col in (self.COL_PROGRESS, self.COL_URL, self.COL_DUE_DATE):
+                if self.cellWidget(row, col) is not None:
+                    self.removeCellWidget(row, col)
+        self._editing_issue_id = None
+
+        self.clearContents()
+        self.setRowCount(len(ordered))
+        for row, issue in enumerate(ordered):
+            self._populate_row(row, issue)
+
+        # Mantener sincronizado el indicador de Qt para compatibilidad
+        if keys:
+            header.setSortIndicator(keys[0][0], keys[0][1])
+
+    def sortItems(self, column, order=Qt.SortOrder.AscendingOrder):
+        """Ordena por un único criterio (compatibilidad con la API de Qt)."""
+        if column == self.COL_URL:
+            return
+        header = self.horizontalHeader()
+        header.set_sort_keys([(column, order)])
+        header.setSortIndicator(column, order)
+        self._apply_sort()
 
     def get_selected_issue_id(self) -> int | None:
         rows = {idx.row() for idx in self.selectedIndexes()}

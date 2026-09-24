@@ -473,6 +473,39 @@ class TestGetAllProjects:
             result = client.get_all_projects()
             assert [p.name for p in result] == ["Alpha", "Middle", "Zebra"]
 
+    def test_get_all_projects_assigns_full_name_and_sorts_by_it(self, client):
+        """get_all_projects() debe asignar full_name con la jerarquía y ordenar por full_name.lower()."""
+        projects = [
+            RedmineProject(id=1, name="Zeta", identifier="z", parent_id=None),
+            RedmineProject(id=2, name="Alpha", identifier="a", parent_id=1),
+            RedmineProject(id=3, name="Beta", identifier="b", parent_id=None),
+        ]
+
+        with patch.object(client, "get_projects", side_effect=[projects, []]):
+            result = client.get_all_projects()
+
+        # full_name compuesto por la jerarquía
+        by_id = {p.id: p for p in result}
+        assert by_id[1].full_name == "Zeta"
+        assert by_id[2].full_name == "Zeta > Alpha"
+        assert by_id[3].full_name == "Beta"
+
+        # Orden por full_name.lower(): "beta" < "zeta" < "zeta > alpha"
+        assert [p.id for p in result] == [3, 1, 2]
+
+    def test_get_all_projects_full_name_equals_name_without_parents(self, client):
+        """Sin padres, full_name debe coincidir con name (compatibilidad con el orden previo)."""
+        projects = [
+            RedmineProject(id=1, name="Zebra", identifier="z", parent_id=None),
+            RedmineProject(id=2, name="Alpha", identifier="a", parent_id=None),
+        ]
+
+        with patch.object(client, "get_projects", side_effect=[projects, []]):
+            result = client.get_all_projects()
+
+        assert all(p.full_name == p.name for p in result)
+        assert [p.name for p in result] == ["Alpha", "Zebra"]
+
     def test_get_all_projects_respects_max_pages(self, client):
         """No debe exceder 20 páginas (límite de seguridad)."""
         page = [RedmineProject(id=i, name=f"P{i}", identifier=f"p{i}", parent_id=None) for i in range(100)]
@@ -482,6 +515,21 @@ class TestGetAllProjects:
             result = client.get_all_projects()
             assert mock_get.call_count == 20  # Máximo 20 páginas
             assert len(result) == 2000  # 20 * 100
+
+    def test_get_all_projects_hierarchy_across_pages(self, client):
+        """W6: la jerarquía se compone aunque padre e hijo lleguen en páginas distintas."""
+        page1 = [RedmineProject(id=1, name="Padre", identifier="p", parent_id=None)]
+        page2 = [RedmineProject(id=2, name="Hijo", identifier="h", parent_id=1)]
+
+        with patch.object(client, "get_projects", side_effect=[page1, page2, []]) as mock_get:
+            result = client.get_all_projects()
+
+        assert mock_get.call_count == 3
+        by_id = {p.id: p for p in result}
+        assert by_id[1].full_name == "Padre"
+        assert by_id[2].full_name == "Padre > Hijo"
+        # Orden por full_name.lower(): "padre" < "padre > hijo"
+        assert [p.id for p in result] == [1, 2]
 
 
 class TestGetCurrentUserId:

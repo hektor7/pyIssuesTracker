@@ -182,6 +182,24 @@ class TestFilterBarMultiProject:
         assert received and received[-1] == [1, 3]
 
 
+class TestFilterBarNombresCompletos:
+    """populate_projects debe usar el nombre recibido sin indentación (D8)."""
+
+    def test_populate_projects_no_anade_indentacion(self, qapp):
+        """El nombre completo se muestra tal cual, sin espacios de indentación añadidos."""
+        fb = FilterBar()
+        fb.populate_projects([(1, "Padre > Hijo")], hierarchy={1: 2, 2: None})
+
+        combo = fb._project_combo
+        texto = None
+        for i in range(combo._list.count()):
+            if combo._list.item(i).data(Qt.ItemDataRole.UserRole) == 1:
+                texto = combo._list.item(i).text()
+                break
+        assert texto == "Padre > Hijo"
+        assert not texto.startswith(" ")
+
+
 class TestMultiSelectCombo:
     """Verifica el widget de multiselección con checkboxes."""
 

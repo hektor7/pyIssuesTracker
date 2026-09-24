@@ -145,20 +145,10 @@ class FilterBar(QWidget):
         main_layout.addLayout(row2)
 
     def populate_projects(self, projects: list[tuple[int, str]], hierarchy: dict[int, int | None] | None = None):
+        # El nombre recibido ya es el nombre completo (D8): se usa tal cual,
+        # sin indentación. La firma mantiene `hierarchy` por compatibilidad.
         self._projects = projects
-        # Mostrar jerarquía con indentación en el nombre visible
-        items: list[tuple[int, str]] = []
-        for pid, name in projects:
-            indent = ""
-            if hierarchy:
-                depth = 0
-                parent = hierarchy.get(pid)
-                while parent:
-                    depth += 1
-                    parent = hierarchy.get(parent)
-                indent = "  " * depth
-            items.append((pid, f"{indent}{name}"))
-        self._project_combo.set_items(items)
+        self._project_combo.set_items(list(projects))
 
     def select_projects(self, project_ids: list[int]):
         """Selecciona los proyectos dados (lista vacía o [0] → Todos)."""

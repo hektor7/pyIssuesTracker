@@ -75,6 +75,7 @@ class MainWindow(QMainWindow):
         self._redmine: RedmineClient | None = None
         self._tray: TrayManager | None = None
         self._projects: list[tuple[int, str]] = []
+        self._project_full_names: dict[int, str] = {}
         self._project_hierarchy: dict[int, int | None] = {}
         self._statuses: list[tuple[int, str]] = []
         self._priorities: list[tuple[int, str]] = []
@@ -331,8 +332,15 @@ class MainWindow(QMainWindow):
             return
         try:
             projects = self._redmine.get_all_projects()
-            self._projects = [(p.id, p.name) for p in projects]
-            self._project_hierarchy = {p.id: p.parent_id for p in projects}
+            # Una sola pasada: nombre completo, jerarquía y lista visible
+            self._project_full_names = {}
+            self._project_hierarchy = {}
+            self._projects = []
+            for p in projects:
+                full_name = p.full_name or p.name
+                self._project_full_names[p.id] = full_name
+                self._project_hierarchy[p.id] = p.parent_id
+                self._projects.append((p.id, full_name))
             self._filter_bar.populate_projects(self._projects, self._project_hierarchy)
 
             if self._settings.filter_fixed and self._settings.filter_projects:
@@ -372,6 +380,7 @@ class MainWindow(QMainWindow):
             self._filter_bar.populate_priorities(self._priorities)
         except RedmineError:
             self._priorities = []
+        self._task_table.set_priorities(self._priorities)
 
     def _cargar_trackers(self):
         if not self._redmine:
@@ -472,12 +481,13 @@ class MainWindow(QMainWindow):
                     "status_id": iss.status_id,
                     "done_ratio": iss.done_ratio,
                     "project_id": iss.project_id,
-                    "project_name": iss.project_name,
+                    "project_name": self._project_full_names.get(iss.project_id, iss.project_name),
                     "assigned_to_id": iss.assigned_to_id,
                     "assigned_to_name": iss.assigned_to_name,
                     "author_name": iss.author_name,
                     "tracker_name": iss.tracker_name,
                     "priority_name": iss.priority_name,
+                    "priority_id": iss.priority_id,
                     "category_name": iss.category_name,
                     "created_on": iss.created_on,
                     "updated_on": iss.updated_on,
