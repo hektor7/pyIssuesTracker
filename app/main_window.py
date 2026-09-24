@@ -546,6 +546,46 @@ class MainWindow(QMainWindow):
                 unique.append((mid, mname))
         return unique
 
+    def _report_custom_fields_for_projects(
+        self, project_ids: list[int] | None
+    ) -> list[tuple[int, str]]:
+        """Unión de campos personalizados de los proyectos indicados.
+
+        Si project_ids es None o queda vacío tras descartar ids falsy, usa
+        todos los proyectos cargados (sin selección = todos). Recorre los ids
+        llamando a get_project_custom_fields(pid) dentro de try/except
+        RedmineError (un proyecto que falle no rompe nada). Deduplica por id
+        de campo y ordena por nombre (case-insensitive).
+        """
+        if not self._redmine:
+            return []
+        ids = [pid for pid in (project_ids or []) if pid]
+        if not ids:
+            ids = [pid for pid, _ in self._projects]
+        fields: list[tuple[int, str]] = []
+        for pid in ids:
+            try:
+                cfs = self._redmine.get_project_custom_fields(pid)
+                fields.extend((cf.id, cf.name) for cf in cfs)
+            except RedmineError:
+                continue
+        seen: set[int] = set()
+        unique: list[tuple[int, str]] = []
+        for fid, fname in fields:
+            if fid not in seen:
+                seen.add(fid)
+                unique.append((fid, fname))
+        unique.sort(key=lambda item: item[1].lower())
+        return unique
+
+    def _report_custom_fields(self) -> list[tuple[int, str]]:
+        """Unión de campos personalizados de todos los proyectos cargados.
+
+        Delega en _report_custom_fields_for_projects(None): sin selección de
+        proyectos, se usan todos los proyectos cargados.
+        """
+        return self._report_custom_fields_for_projects(None)
+
     def _generar_informe(self):
         """Genera un informe ODS con los filtros elegidos en el ReportDialog."""
         if not self._redmine:
@@ -554,8 +594,12 @@ class MainWindow(QMainWindow):
 
         users = self._report_users()
         preselected = [pid for pid in self._filter_bar.selected_project_ids if pid > 0]
+        # Unión para los proyectos preseleccionados (o todos si no hay preselección)
+        custom_fields = self._report_custom_fields_for_projects(preselected)
 
-        dlg = ReportDialog(self._projects, users, preselected, self)
+        dlg = ReportDialog(self._projects, users, preselected, self,
+                           custom_fields=custom_fields,
+                           custom_fields_provider=self._report_custom_fields_for_projects)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -599,7 +643,13 @@ class MainWindow(QMainWindow):
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             try:
                 field_keys = dlg.selected_fields
-                columns = [label for key, label in REPORT_FIELDS if key in set(field_keys)]
+                label_by_key = {key: label for key, label in REPORT_FIELDS}
+                # Etiquetas de TODOS los campos personalizados posibles, para que
+                # cualquier clave cf_<id> seleccionable tenga etiqueta.
+                label_by_key.update(
+                    {f"cf_{cf_id}": cf_name for cf_id, cf_name in self._report_custom_fields()}
+                )
+                columns = [label_by_key[key] for key in field_keys]
                 generator = ReportGenerator(columns, sheet_name="Informe")
                 for row in self._compose_report_rows(filtered, field_keys):
                     generator.add_row(row)
@@ -627,6 +677,17 @@ class MainWindow(QMainWindow):
 
     def _report_field_value(self, issue, key):
         """Devuelve el valor de un campo del informe para una tarea."""
+        if key.startswith("cf_"):
+            try:
+                field_id = int(key[3:])
+            except ValueError:
+                return ""
+            value = issue.custom_fields.get(field_id)
+            if value is None or value == "":
+                return ""
+            if isinstance(value, list):
+                return ", ".join(str(v) for v in value if v not in (None, ""))
+            return str(value)
         if key == "id":
             return issue.id
         if key == "proyecto":

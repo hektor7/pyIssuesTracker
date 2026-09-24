@@ -25,14 +25,21 @@ class ReportDialog(QDialog):
     """Diálogo de filtros para generar un informe ODS de tareas."""
 
     def __init__(self, projects=None, users=None,
-                 preselected_project_ids=None, parent=None):
+                 preselected_project_ids=None, parent=None, custom_fields=None,
+                 custom_fields_provider=None):
         super().__init__(parent)
         self._projects = projects or []
         self._users = users or []
         self._preselected_project_ids = preselected_project_ids or []
+        self._custom_fields = custom_fields or []
+        self._custom_fields_provider = custom_fields_provider
+        self._custom_fields_checked: set[str] = set()
         self.setWindowTitle("Generar informe")
         self.setMinimumWidth(420)
         self._setup_ui()
+        # Conectar después de _setup_ui() para no disparar durante la construcción
+        # (set_selected_ids con preselección emite seleccion_cambiada).
+        self._projects_combo.seleccion_cambiada.connect(self._on_projects_changed)
 
     # ================================================================
     # UI
@@ -58,20 +65,61 @@ class ReportDialog(QDialog):
         """Grupo 'Campos del informe': un QCheckBox por campo del catálogo.
 
         Todas las casillas aparecen marcadas por defecto (comportamiento
-        actual: el informe incluye todos los campos).
+        actual: el informe incluye todos los campos). Incluye un subgrupo
+        'Campos personalizados' (recalculable) con una casilla por campo,
+        desmarcadas por defecto; se oculta si no hay campos.
         """
         group = QGroupBox("Campos del informe")
-        grid = QGridLayout(group)
-        grid.setSpacing(6)
+        vbox = QVBoxLayout(group)
+        vbox.setSpacing(6)
 
+        grid = QGridLayout()
+        grid.setSpacing(6)
         self._field_checkboxes: dict[str, QCheckBox] = {}
         for index, (key, label) in enumerate(REPORT_FIELDS):
             cb = QCheckBox(label)
             cb.setChecked(True)
             self._field_checkboxes[key] = cb
             grid.addWidget(cb, index // 2, index % 2)
+        vbox.addLayout(grid)
+
+        self._custom_field_checkboxes: dict[str, QCheckBox] = {}
+        self._custom_fields_group = QGroupBox("Campos personalizados")
+        self._custom_fields_grid = QGridLayout(self._custom_fields_group)
+        self._custom_fields_grid.setSpacing(6)
+        vbox.addWidget(self._custom_fields_group)
+        self._populate_custom_fields(self._custom_fields)
 
         return group
+
+    def _populate_custom_fields(self, fields: list[tuple[int, str]]):
+        """Reconstruye las casillas del subgrupo 'Campos personalizados'.
+
+        Vacía el grid y las casillas previas. Si fields está vacío, oculta el
+        subgrupo. Si no, lo muestra y crea una casilla por campo, preservando
+        el marcado previo (self._custom_fields_checked) de las claves que sigan
+        existiendo; las nuevas quedan desmarcadas.
+        """
+        # Guardar el marcado previo antes de vaciar
+        self._custom_fields_checked = {
+            key for key, cb in self._custom_field_checkboxes.items() if cb.isChecked()
+        }
+        for cb in self._custom_field_checkboxes.values():
+            self._custom_fields_grid.removeWidget(cb)
+            cb.deleteLater()
+        self._custom_field_checkboxes = {}
+
+        if not fields:
+            self._custom_fields_group.setVisible(False)
+            return
+
+        self._custom_fields_group.setVisible(True)
+        for index, (cf_id, cf_name) in enumerate(fields):
+            key = f"cf_{cf_id}"
+            cb = QCheckBox(cf_name)
+            cb.setChecked(key in self._custom_fields_checked)
+            self._custom_field_checkboxes[key] = cb
+            self._custom_fields_grid.addWidget(cb, index // 2, index % 2)
 
     def _build_users_group(self) -> QGroupBox:
         """Grupo 'Usuarios implicados': multiselect + checkboxes de rol."""
@@ -188,10 +236,39 @@ class ReportDialog(QDialog):
             return []
         return ids
 
+    def _on_projects_changed(self):
+        """Recalcula los campos personalizados al cambiar la selección de proyectos.
+
+        Si hay custom_fields_provider, consulta los campos para los proyectos
+        seleccionados ([] = todos) y reconstruye el subgrupo. Si el provider
+        falla, el subgrupo queda vacío sin romper el diálogo.
+        """
+        if not self._custom_fields_provider:
+            return
+        try:
+            fields = self._custom_fields_provider(self.selected_project_ids)
+        except Exception:
+            fields = []
+        self._custom_fields = fields
+        self._populate_custom_fields(fields)
+
     @property
     def selected_fields(self) -> list[str]:
-        """Claves de los campos marcados, en el orden canónico de REPORT_FIELDS."""
-        return [key for key, _ in REPORT_FIELDS if self._field_checkboxes[key].isChecked()]
+        """Claves de los campos marcados.
+
+        Primero las estándar en el orden canónico de REPORT_FIELDS y después
+        las claves cf_<id> de los campos personalizados marcados, en el orden
+        recibido en custom_fields.
+        """
+        standard = [
+            key for key, _ in REPORT_FIELDS
+            if self._field_checkboxes[key].isChecked()
+        ]
+        custom = [
+            key for key in self._custom_field_checkboxes
+            if self._custom_field_checkboxes[key].isChecked()
+        ]
+        return standard + custom
 
     # ================================================================
     # Validación

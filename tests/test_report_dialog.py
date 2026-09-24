@@ -221,3 +221,125 @@ class TestCamposInforme:
 
         mock_warning.assert_not_called()
         assert dialog.result() == QDialog.DialogCode.Accepted
+
+
+class TestCamposPersonalizados:
+    """Subgrupo 'Campos personalizados' del ReportDialog (cambio informe-campos-personalizados)."""
+
+    def test_subgrupo_con_casillas_desmarcadas(self, qapp):
+        """Con custom_fields, aparecen las casillas desmarcadas."""
+        dlg = ReportDialog(
+            PROJECTS, USERS, parent=None,
+            custom_fields=[(7, "Cliente"), (9, "Sprint")],
+        )
+        assert set(dlg._custom_field_checkboxes) == {"cf_7", "cf_9"}
+        for cb in dlg._custom_field_checkboxes.values():
+            assert not cb.isChecked()
+
+    def test_selected_fields_incluye_cf_al_marcar(self, qapp):
+        """Al marcar campos personalizados, selected_fields los incluye tras los estándar."""
+        dlg = ReportDialog(
+            PROJECTS, USERS, parent=None,
+            custom_fields=[(7, "Cliente"), (9, "Sprint")],
+        )
+        dlg._custom_field_checkboxes["cf_7"].setChecked(True)
+        dlg._custom_field_checkboxes["cf_9"].setChecked(True)
+        assert dlg.selected_fields == DEFAULT_FIELD_KEYS + ["cf_7", "cf_9"]
+
+    def test_orden_respeta_custom_fields(self, qapp):
+        """El orden de los cf_<id> sigue el orden de custom_fields."""
+        dlg = ReportDialog(
+            PROJECTS, USERS, parent=None,
+            custom_fields=[(9, "Sprint"), (7, "Cliente")],
+        )
+        dlg._custom_field_checkboxes["cf_9"].setChecked(True)
+        dlg._custom_field_checkboxes["cf_7"].setChecked(True)
+        assert dlg.selected_fields == DEFAULT_FIELD_KEYS + ["cf_9", "cf_7"]
+
+    def test_sin_campos_personalizados_no_hay_subgrupo(self, dialog):
+        """Sin custom_fields, no existe el subgrupo de campos personalizados."""
+        assert not dialog._custom_field_checkboxes
+
+    def test_validacion_cuenta_campos_personalizados(self, qapp):
+        """Con solo un campo personalizado marcado, accept() acepta."""
+        dlg = ReportDialog(
+            PROJECTS, USERS, parent=None,
+            custom_fields=[(7, "Cliente")],
+        )
+        for cb in dlg._field_checkboxes.values():
+            cb.setChecked(False)
+        dlg._custom_field_checkboxes["cf_7"].setChecked(True)
+
+        with patch("app.dialogs.report_dialog.QMessageBox.warning") as mock_warning:
+            dlg.accept()
+
+        mock_warning.assert_not_called()
+        assert dlg.result() == QDialog.DialogCode.Accepted
+
+
+class TestCamposPersonalizadosRecalculables:
+    """El subgrupo de campos personalizados se recalcula al cambiar la selección de proyectos."""
+
+    def test_cambio_de_proyecto_llama_al_provider_y_reconstruye(self, qapp):
+        """Al cambiar la selección, se llama al provider con los ids y se reconstruyen las casillas."""
+        def provider(project_ids):
+            if project_ids == [1]:
+                return [(7, "Cliente")]
+            return [(9, "Sprint")]
+
+        dlg = ReportDialog(
+            PROJECTS, USERS, parent=None,
+            custom_fields=[(7, "Cliente")],
+            custom_fields_provider=provider,
+        )
+        assert set(dlg._custom_field_checkboxes) == {"cf_7"}
+
+        dlg._projects_combo.set_selected_ids([2])
+        assert set(dlg._custom_field_checkboxes) == {"cf_9"}
+        assert dlg._custom_fields == [(9, "Sprint")]
+
+    def test_marcado_previo_se_preserva_si_el_campo_sigue_existiendo(self, qapp):
+        """Si el campo marcado sigue existiendo tras recargar, se mantiene marcado."""
+        def provider(project_ids):
+            return [(7, "Cliente"), (9, "Sprint")]
+
+        dlg = ReportDialog(
+            PROJECTS, USERS, parent=None,
+            custom_fields=[(7, "Cliente"), (9, "Sprint")],
+            custom_fields_provider=provider,
+        )
+        dlg._custom_field_checkboxes["cf_7"].setChecked(True)
+
+        dlg._projects_combo.set_selected_ids([1])
+        assert dlg._custom_field_checkboxes["cf_7"].isChecked()
+        assert not dlg._custom_field_checkboxes["cf_9"].isChecked()
+
+    def test_marcado_se_pierde_si_el_campo_desaparece(self, qapp):
+        """Si el campo marcado ya no existe tras recargar, desaparece de la selección."""
+        def provider(project_ids):
+            return [(9, "Sprint")] if project_ids == [2] else [(7, "Cliente")]
+
+        dlg = ReportDialog(
+            PROJECTS, USERS, parent=None,
+            custom_fields=[(7, "Cliente")],
+            custom_fields_provider=provider,
+        )
+        dlg._custom_field_checkboxes["cf_7"].setChecked(True)
+
+        dlg._projects_combo.set_selected_ids([2])
+        assert set(dlg._custom_field_checkboxes) == {"cf_9"}
+        assert "cf_7" not in dlg.selected_fields
+
+    def test_provider_que_falla_deja_sin_campos_personalizados(self, qapp):
+        """Si el provider lanza una excepción, el subgrupo queda vacío sin romper el diálogo."""
+        def provider(project_ids):
+            raise RuntimeError("boom")
+
+        dlg = ReportDialog(
+            PROJECTS, USERS, parent=None,
+            custom_fields=[(7, "Cliente")],
+            custom_fields_provider=provider,
+        )
+        dlg._projects_combo.set_selected_ids([1])
+        assert dlg._custom_fields == []
+        assert not dlg._custom_field_checkboxes

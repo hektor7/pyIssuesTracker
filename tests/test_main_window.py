@@ -1555,6 +1555,97 @@ class TestGenerarInforme:
         assert len(rows_added) == 1
         assert len(rows_added[0]) == 4
 
+    def test_pasa_custom_fields_al_dialogo(self, main_window):
+        """_generar_informe pasa la unión de campos personalizados al ReportDialog."""
+        self._setup(main_window)
+        main_window._projects = [(1, "Proyecto A")]
+        main_window._redmine.get_project_custom_fields.return_value = [
+            SimpleNamespace(id=7, name="Cliente"),
+        ]
+        dlg = self._make_report_dialog()
+        dlg.exec.return_value = QDialog.DialogCode.Rejected
+
+        with self._patch_report_dialog(dlg) as mock_report_cls:
+            main_window._generar_informe()
+
+        mock_report_cls.assert_called_once()
+        kwargs = mock_report_cls.call_args.kwargs
+        assert kwargs["custom_fields"] == [(7, "Cliente")]
+
+    def test_columnas_incluyen_campo_personalizado_seleccionado(self, main_window, tmp_path):
+        """ReportGenerator recibe la etiqueta del campo personalizado marcado."""
+        self._setup(main_window)
+        main_window._projects = [(1, "Proyecto A")]
+        main_window._redmine.get_project_custom_fields.return_value = [
+            SimpleNamespace(id=7, name="Cliente"),
+        ]
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog(
+            selected_fields=["id", "cf_7"],
+        )
+        path = str(tmp_path / "informe.ods")
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox"),
+        ):
+            main_window._generar_informe()
+
+        mock_gen_cls.assert_called_once_with(["ID", "Cliente"], sheet_name="Informe")
+
+    def test_campo_personalizado_no_seleccionado_no_aparece_en_columnas(
+        self, main_window, tmp_path
+    ):
+        """Si selected_fields no incluye cf_7, la columna del campo personalizado no aparece."""
+        self._setup(main_window)
+        main_window._projects = [(1, "Proyecto A")]
+        main_window._redmine.get_project_custom_fields.return_value = [
+            SimpleNamespace(id=7, name="Cliente"),
+        ]
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog(
+            selected_fields=["id", "titulo"],  # sin cf_7
+        )
+        path = str(tmp_path / "informe.ods")
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox"),
+        ):
+            main_window._generar_informe()
+
+        columns = mock_gen_cls.call_args.args[0]
+        assert "Cliente" not in columns
+        assert columns == ["ID", "Título"]
+
+    def test_por_defecto_sin_columnas_personalizadas(self, main_window, tmp_path):
+        """Con los 17 campos estándar y sin cf_, las columnas son exactamente REPORT_COLUMNS."""
+        self._setup(main_window)
+        main_window._projects = [(1, "Proyecto A")]
+        main_window._redmine.get_project_custom_fields.return_value = [
+            SimpleNamespace(id=7, name="Cliente"),
+        ]
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog()  # selected_fields = DEFAULT_FIELD_KEYS (17)
+        path = str(tmp_path / "informe.ods")
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox"),
+        ):
+            main_window._generar_informe()
+
+        mock_gen_cls.assert_called_once_with(REPORT_COLUMNS, sheet_name="Informe")
+
 
 class TestComposeReportRows:
     """Tests unitarios de _compose_report_rows (tarea 6.1.7)."""
@@ -1722,3 +1813,117 @@ class TestComposeReportRows:
         )
         row = main_window._compose_report_rows([iss], ["comentarios"])[0]
         assert row[0] == "[10/02/2026] Marta: sin hora"
+
+
+class TestReportCustomFields:
+    """Recolección y unión de campos personalizados (cambio informe-campos-personalizados)."""
+
+    def test_union_sin_duplicados_ordenada_por_nombre(self, main_window):
+        """_report_custom_fields une los campos de todos los proyectos, dedupe por id y ordena por nombre."""
+        main_window._projects = [(1, "Proyecto A"), (2, "Proyecto B")]
+        cf1 = SimpleNamespace(id=7, name="Cliente")
+        cf2 = SimpleNamespace(id=9, name="Sprint")
+        cf3 = SimpleNamespace(id=7, name="Cliente")  # duplicado en otro proyecto
+        main_window._redmine.get_project_custom_fields.side_effect = [
+            [cf1, cf2], [cf3],
+        ]
+        result = main_window._report_custom_fields()
+        assert result == [(7, "Cliente"), (9, "Sprint")]
+        main_window._redmine.get_project_custom_fields.assert_any_call(1)
+        main_window._redmine.get_project_custom_fields.assert_any_call(2)
+
+    def test_ignora_proyecto_que_falla(self, main_window):
+        """Si un proyecto lanza RedmineError, se ignora y el resto se devuelve."""
+        main_window._projects = [(1, "Proyecto A"), (2, "Proyecto B")]
+        cf = SimpleNamespace(id=9, name="Sprint")
+        main_window._redmine.get_project_custom_fields.side_effect = [
+            RedmineError("boom"), [cf],
+        ]
+        result = main_window._report_custom_fields()
+        assert result == [(9, "Sprint")]
+
+    def test_sin_redmine_devuelve_vacio(self, main_window):
+        """Sin conexión, _report_custom_fields devuelve []."""
+        main_window._redmine = None
+        assert main_window._report_custom_fields() == []
+
+    def test_ordena_por_nombre_case_insensitive(self, main_window):
+        """El orden es por nombre sin distinguir mayúsculas."""
+        main_window._projects = [(1, "Proyecto A")]
+        cf1 = SimpleNamespace(id=1, name="zeta")
+        cf2 = SimpleNamespace(id=2, name="Alfa")
+        main_window._redmine.get_project_custom_fields.return_value = [cf1, cf2]
+        result = main_window._report_custom_fields()
+        assert result == [(2, "Alfa"), (1, "zeta")]
+
+    def test_for_projects_filtra_por_proyecto(self, main_window):
+        """_report_custom_fields_for_projects([1]) devuelve solo los campos del proyecto 1."""
+        main_window._projects = [(1, "Proyecto A"), (2, "Proyecto B")]
+        cf1 = SimpleNamespace(id=7, name="Cliente")
+        cf2 = SimpleNamespace(id=9, name="Sprint")
+        main_window._redmine.get_project_custom_fields.side_effect = [
+            [cf1], [cf2],
+        ]
+        result = main_window._report_custom_fields_for_projects([1])
+        assert result == [(7, "Cliente")]
+        main_window._redmine.get_project_custom_fields.assert_called_once_with(1)
+
+    def test_for_projects_sin_ids_usa_todos(self, main_window):
+        """None o lista vacía usan todos los proyectos cargados."""
+        main_window._projects = [(1, "Proyecto A"), (2, "Proyecto B")]
+        cf1 = SimpleNamespace(id=7, name="Cliente")
+        cf2 = SimpleNamespace(id=9, name="Sprint")
+        main_window._redmine.get_project_custom_fields.side_effect = [
+            [cf1], [cf2],
+        ]
+        assert main_window._report_custom_fields_for_projects(None) == [
+            (7, "Cliente"), (9, "Sprint"),
+        ]
+        main_window._redmine.get_project_custom_fields.reset_mock()
+        main_window._redmine.get_project_custom_fields.side_effect = [
+            [cf1], [cf2],
+        ]
+        assert main_window._report_custom_fields_for_projects([]) == [
+            (7, "Cliente"), (9, "Sprint"),
+        ]
+
+    def test_for_projects_ignora_ids_vacios(self, main_window):
+        """Los ids falsy (0, None) se descartan antes de consultar."""
+        main_window._projects = [(1, "Proyecto A")]
+        cf1 = SimpleNamespace(id=7, name="Cliente")
+        main_window._redmine.get_project_custom_fields.return_value = [cf1]
+        result = main_window._report_custom_fields_for_projects([0, None, 1])
+        assert result == [(7, "Cliente")]
+        main_window._redmine.get_project_custom_fields.assert_called_once_with(1)
+
+    def test_for_projects_sin_redmine_devuelve_vacio(self, main_window):
+        """Sin conexión, _report_custom_fields_for_projects devuelve []."""
+        main_window._redmine = None
+        assert main_window._report_custom_fields_for_projects([1]) == []
+
+    def test_valor_escalar(self, main_window):
+        """cf_7 devuelve el valor escalar del campo 7."""
+        iss = RedmineIssue(id=1, subject="T", custom_fields={7: "ACME"})
+        assert main_window._report_field_value(iss, "cf_7") == "ACME"
+
+    def test_valor_lista_unida_por_coma(self, main_window):
+        """Un campo multivalor se une con ', '."""
+        iss = RedmineIssue(id=1, subject="T", custom_fields={7: ["A", "B"]})
+        assert main_window._report_field_value(iss, "cf_7") == "A, B"
+
+    def test_valor_ausente_devuelve_vacio(self, main_window):
+        """Sin el campo, la celda queda vacía."""
+        iss = RedmineIssue(id=1, subject="T", custom_fields={})
+        assert main_window._report_field_value(iss, "cf_7") == ""
+
+    def test_valor_none_o_vacio_devuelve_vacio(self, main_window):
+        """None o cadena vacía se formatean como celda vacía."""
+        iss = RedmineIssue(id=1, subject="T", custom_fields={7: None})
+        assert main_window._report_field_value(iss, "cf_7") == ""
+        iss2 = RedmineIssue(id=1, subject="T", custom_fields={7: ""})
+        assert main_window._report_field_value(iss2, "cf_7") == ""
+
+    def test_lista_con_vacios_ignora_vacios(self, main_window):
+        """Los elementos vacíos de una lista multivalor se ignoran."""
+        iss = RedmineIssue(id=1, subject="T", custom_fields={7: ["A", "", "B"]})
+        assert main_window._report_field_value(iss, "cf_7") == "A, B"
