@@ -4,7 +4,7 @@ import sys
 from datetime import date, timedelta
 
 import pytest
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QEvent
 from PyQt6.QtWidgets import QApplication, QTableWidgetItem
 
 from app.utils.dates import iso_datetime_to_display, iso_to_display, display_to_iso
@@ -271,6 +271,190 @@ class TestMultiSelectCombo:
         combo.set_selected_ids([5])
         assert len(received) == 1
         assert 5 in received[0]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# MultiSelectCombo — búsqueda por texto (cambio mejoras-generacion-informes)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestMultiSelectComboBusqueda:
+    """Búsqueda por texto en el popup del MultiSelectCombo (tareas 1.1-1.4)."""
+
+    def test_popup_incluye_campo_de_busqueda(self, qapp):
+        combo = MultiSelectCombo()
+        assert hasattr(combo, "_search_edit")
+        assert combo._search_edit.placeholderText() == "Buscar..."
+        assert combo._search_edit.parent() is combo._popup
+
+    def test_filtrado_por_subcadena_case_insensitive(self, qapp):
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([(MultiSelectCombo.ALL, "Todos")])
+        combo.set_items([(1, "Ana"), (2, "Luis"), (3, "Andrea")])
+        combo._apply_filter("an")
+        visibles = [
+            combo._list.item(i).text()
+            for i in range(combo._list.count())
+            if not combo._list.item(i).isHidden()
+        ]
+        assert "Ana" in visibles
+        assert "Andrea" in visibles
+        assert "Luis" not in visibles
+
+    def test_filtrado_preserva_seleccion(self, qapp):
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([(MultiSelectCombo.ALL, "Todos")])
+        combo.set_items([(1, "Ana"), (2, "Luis")])
+        combo.set_selected_ids([1, 2])
+        combo._apply_filter("an")
+        assert combo.selected_ids() == [1, 2]
+        for i in range(combo._list.count()):
+            item = combo._list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == 2:
+                assert item.checkState() == Qt.CheckState.Checked
+
+    def test_vaciar_filtro_restaura_todos(self, qapp):
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([(MultiSelectCombo.ALL, "Todos")])
+        combo.set_items([(1, "Ana"), (2, "Luis")])
+        combo.set_selected_ids([1, 2])
+        combo._apply_filter("an")
+        combo._apply_filter("")
+        for i in range(combo._list.count()):
+            assert not combo._list.item(i).isHidden()
+        assert combo.selected_ids() == [1, 2]
+
+    def test_opciones_fijas_nunca_se_ocultan(self, qapp):
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([
+            (MultiSelectCombo.ALL, "Todos"),
+            (MultiSelectCombo.NONE, "Sin asignar"),
+            (MultiSelectCombo.ME, "Asignado a mí"),
+        ])
+        combo.set_items([(1, "Ana")])
+        combo._apply_filter("zzz")
+        for i in range(combo._list.count()):
+            item = combo._list.item(i)
+            iid = item.data(Qt.ItemDataRole.UserRole)
+            if iid in (MultiSelectCombo.ALL, MultiSelectCombo.NONE, MultiSelectCombo.ME):
+                assert not item.isHidden()
+            else:
+                assert item.isHidden()
+
+
+class TestMultiSelectComboTooltips:
+    """Tooltips en ítems y botón del MultiSelectCombo (tareas 1.5-1.6)."""
+
+    def test_items_tienen_tooltip_con_su_texto(self, qapp):
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([(MultiSelectCombo.ALL, "Todos")])
+        combo.set_items([(1, "Ana"), (2, "Luis")])
+        for i in range(combo._list.count()):
+            item = combo._list.item(i)
+            assert item.toolTip() == item.text()
+
+    def test_boton_tooltip_con_seleccion_unica(self, qapp):
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([(MultiSelectCombo.ALL, "Todos")])
+        combo.set_items([(1, "Ana"), (2, "Luis")])
+        combo.set_selected_ids([1])
+        assert combo._button.text() == "Ana"
+        assert combo._button.toolTip() == "Ana"
+
+    def test_boton_tooltip_vacio_con_todos(self, qapp):
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([(MultiSelectCombo.ALL, "Todos")])
+        combo.set_items([(1, "Ana")])
+        assert combo._button.text() == "Todos"
+        assert combo._button.toolTip() == ""
+
+    def test_boton_tooltip_vacio_con_multiseleccion(self, qapp):
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([(MultiSelectCombo.ALL, "Todos")])
+        combo.set_items([(1, "Ana"), (2, "Luis")])
+        combo.set_selected_ids([1, 2])
+        assert combo._button.text() == "2 seleccionados"
+        assert combo._button.toolTip() == ""
+
+
+class TestFilterBarTooltipProyecto:
+    """Integración: FilterBar.populate_projects expone el nombre completo en el tooltip (tarea 1.7)."""
+
+    def test_tooltip_nombre_completo_en_item(self, qapp):
+        fb = FilterBar()
+        fb.populate_projects([(1, "Padre > Hijo muy largo")])
+        combo = fb._project_combo
+        item = None
+        for i in range(combo._list.count()):
+            if combo._list.item(i).data(Qt.ItemDataRole.UserRole) == 1:
+                item = combo._list.item(i)
+                break
+        assert item is not None
+        assert item.toolTip() == "Padre > Hijo muy largo"
+
+
+class TestMultiSelectComboCierrePopup:
+    """Cierre del popup por clic fuera: limpia búsqueda y resetea _popup_open (tarea 14.1)."""
+
+    def test_cierre_popup_por_clic_fuera_vacia_busqueda_y_resetea(self, qapp):
+        """Al ocultarse el popup (clic fuera), se vacía la búsqueda y _popup_open=False."""
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([(MultiSelectCombo.ALL, "Todos")])
+        combo.set_items([(1, "Ana"), (2, "Luis")])
+        combo._toggle_popup()  # abre
+        assert combo._popup_open is True
+        combo._search_edit.setText("an")
+        # Simular el cierre por clic fuera: el popup recibe un evento Hide
+        combo._popup.hide()
+        assert combo._search_edit.text() == ""
+        assert combo._popup_open is False
+
+    def test_cierre_popup_por_clic_fuera_permite_reabrir_con_un_clic(self, qapp):
+        """Tras el cierre por clic fuera, un clic en el botón vuelve a abrir el popup."""
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([(MultiSelectCombo.ALL, "Todos")])
+        combo.set_items([(1, "Ana")])
+        combo._toggle_popup()
+        combo._popup.hide()  # clic fuera
+        assert combo._popup_open is False
+        combo._toggle_popup()  # segundo clic: debe ABRIR
+        assert combo._popup_open is True
+
+    def test_event_filter_hide_vacia_busqueda(self, qapp):
+        """El event filter del popup responde a QEvent.Type.Hide."""
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([(MultiSelectCombo.ALL, "Todos")])
+        combo.set_items([(1, "Ana")])
+        combo._toggle_popup()
+        combo._search_edit.setText("an")
+        combo.eventFilter(combo._popup, QEvent(QEvent.Type.Hide))
+        assert combo._search_edit.text() == ""
+        assert combo._popup_open is False
+
+
+class TestMultiSelectComboFallbackBoton:
+    """Fallback de _update_button_text con ids fuera de la lista (tarea 14.4)."""
+
+    def test_boton_fallback_con_id_fuera_de_la_lista(self, qapp):
+        """Con una selección única cuyo id no está en la lista, el botón muestra el id y tooltip vacío."""
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([(MultiSelectCombo.ALL, "Todos")])
+        combo.set_items([(1, "Ana")])
+        combo.set_selected_ids([999])  # id no presente en items ni fixed
+        assert combo._button.text() == "999"
+        assert combo._button.toolTip() == ""
+
+    def test_boton_busca_nombre_en_opciones_fijas(self, qapp):
+        """Con selección única de una opción fija, el botón muestra su nombre y tooltip."""
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([
+            (MultiSelectCombo.ALL, "Todos"),
+            (MultiSelectCombo.NONE, "Sin asignar"),
+        ])
+        combo.set_items([(1, "Ana")])
+        combo.set_selected_ids([MultiSelectCombo.NONE])
+        assert combo._button.text() == "Sin asignar"
+        assert combo._button.toolTip() == "Sin asignar"
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -26,7 +26,7 @@ class ReportDialog(QDialog):
 
     def __init__(self, projects=None, users=None,
                  preselected_project_ids=None, parent=None, custom_fields=None,
-                 custom_fields_provider=None):
+                 custom_fields_provider=None, statuses=None):
         super().__init__(parent)
         self._projects = projects or []
         self._users = users or []
@@ -34,6 +34,7 @@ class ReportDialog(QDialog):
         self._custom_fields = custom_fields or []
         self._custom_fields_provider = custom_fields_provider
         self._custom_fields_checked: set[str] = set()
+        self._statuses = statuses or []
         self.setWindowTitle("Generar informe")
         self.setMinimumWidth(420)
         self._setup_ui()
@@ -52,6 +53,7 @@ class ReportDialog(QDialog):
         layout.addWidget(self._build_fields_group())
         layout.addWidget(self._build_users_group())
         layout.addWidget(self._build_dates_group())
+        layout.addWidget(self._build_status_group())
         layout.addWidget(self._build_projects_group())
 
         buttons = QDialogButtonBox()
@@ -197,6 +199,19 @@ class ReportDialog(QDialog):
 
         return group
 
+    def _build_status_group(self) -> QGroupBox:
+        """Grupo 'Estado de la tarea': multiselect con 'Todas' + un ítem por estado."""
+        group = QGroupBox("Estado de la tarea")
+        vbox = QVBoxLayout(group)
+        vbox.setSpacing(6)
+
+        self._status_combo = MultiSelectCombo()
+        self._status_combo.set_fixed_options([(MultiSelectCombo.ALL, "Todas")])
+        self._status_combo.set_items(self._statuses)
+        vbox.addWidget(self._status_combo)
+
+        return group
+
     # ================================================================
     # Propiedades de filtros
     # ================================================================
@@ -232,6 +247,14 @@ class ReportDialog(QDialog):
     def selected_project_ids(self) -> list[int]:
         """IDs de proyectos seleccionados ([] si solo está 'Todos')."""
         ids = self._projects_combo.selected_ids()
+        if MultiSelectCombo.ALL in ids:
+            return []
+        return ids
+
+    @property
+    def selected_status_ids(self) -> list[int]:
+        """IDs de estados seleccionados ([] si solo está 'Todas')."""
+        ids = self._status_combo.selected_ids()
         if MultiSelectCombo.ALL in ids:
             return []
         return ids

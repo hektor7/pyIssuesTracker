@@ -3,6 +3,8 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
+from odf import table, text
+from odf.opendocument import load
 from PyQt6.QtWidgets import QMainWindow, QDialog, QMessageBox
 
 from app.dialogs.assign_dialog import AssignDialog
@@ -1299,6 +1301,54 @@ class TestInformeToolbar:
             assert mock_gen.call_count == 2
 
 
+class TestReportUsersOrden:
+    """_report_users() debe ordenar: usuario actual primero y resto alfabético (tareas 3.1-3.4)."""
+
+    def _setup_members(self, main_window, members_by_project):
+        """Configura proyectos y membresías para _report_users."""
+        w = main_window
+        w._filter_bar.selected_project_ids = []
+        w._projects = [(pid, f"P{pid}") for pid in members_by_project]
+        w._redmine.get_project_memberships.side_effect = [
+            [SimpleNamespace(user_id=mid, user_name=mname) for mid, mname in mbs]
+            for mbs in members_by_project.values()
+        ]
+        return w
+
+    def test_report_users_orden_alfabetico_case_insensitive(self, main_window):
+        """Sin usuario actual presente, el orden es alfabético por nombre (sin mayúsculas)."""
+        w = self._setup_members(main_window, {
+            1: [(10, "Zoe"), (11, "ana"), (12, "Luis")],
+        })
+        w._current_user_id = 99  # no está entre los miembros
+        assert w._report_users() == [(11, "ana"), (12, "Luis"), (10, "Zoe")]
+
+    def test_report_users_usuario_actual_primero(self, main_window):
+        """Si _current_user_id está entre los miembros, aparece primero y el resto alfabético."""
+        w = self._setup_members(main_window, {
+            1: [(11, "ana"), (10, "Zoe"), (12, "Luis")],  # entrada desordenada
+        })
+        w._current_user_id = 10  # Zoe es el usuario autenticado
+        assert w._report_users() == [(10, "Zoe"), (11, "ana"), (12, "Luis")]
+
+    def test_report_users_sin_usuario_actual_alfabetico_puro(self, main_window):
+        """Con _current_user_id == 0, el orden es puramente alfabético."""
+        w = self._setup_members(main_window, {
+            1: [(12, "Luis"), (10, "Zoe"), (11, "ana")],  # entrada desordenada
+        })
+        w._current_user_id = 0
+        assert w._report_users() == [(11, "ana"), (12, "Luis"), (10, "Zoe")]
+
+    def test_report_users_deduplica_por_user_id(self, main_window):
+        """Un usuario miembro de varios proyectos aparece una sola vez."""
+        w = self._setup_members(main_window, {
+            1: [(12, "Marta"), (10, "Ana"), (11, "Luis")],
+            2: [(11, "Luis"), (10, "Ana")],
+        })
+        w._current_user_id = 0
+        assert w._report_users() == [(10, "Ana"), (11, "Luis"), (12, "Marta")]
+
+
 class TestGenerarInforme:
     """Flujo de _generar_informe (tareas 6.1.2 a 6.1.6)."""
 
@@ -1333,6 +1383,7 @@ class TestGenerarInforme:
         dlg.selected_user_ids = []
         dlg.selected_roles = ["creador", "actualizador", "participante"]
         dlg.selected_fields = DEFAULT_FIELD_KEYS
+        dlg.selected_status_ids = []
         dlg.created_from = None
         dlg.created_to = None
         for key, value in overrides.items():
@@ -1625,14 +1676,14 @@ class TestGenerarInforme:
         assert columns == ["ID", "Título"]
 
     def test_por_defecto_sin_columnas_personalizadas(self, main_window, tmp_path):
-        """Con los 17 campos estándar y sin cf_, las columnas son exactamente REPORT_COLUMNS."""
+        """Con los 18 campos estándar y sin cf_, las columnas son exactamente REPORT_COLUMNS."""
         self._setup(main_window)
         main_window._projects = [(1, "Proyecto A")]
         main_window._redmine.get_project_custom_fields.return_value = [
             SimpleNamespace(id=7, name="Cliente"),
         ]
         main_window._redmine.get_issues.return_value = [self._issue()]
-        dlg = self._make_report_dialog()  # selected_fields = DEFAULT_FIELD_KEYS (17)
+        dlg = self._make_report_dialog()  # selected_fields = DEFAULT_FIELD_KEYS (18)
         path = str(tmp_path / "informe.ods")
 
         mock_gen_cls = MagicMock(spec=ReportGenerator)
@@ -1645,6 +1696,144 @@ class TestGenerarInforme:
             main_window._generar_informe()
 
         mock_gen_cls.assert_called_once_with(REPORT_COLUMNS, sheet_name="Informe")
+
+    def test_generar_informe_expande_proyectos_a_descendientes(self, main_window, tmp_path):
+        """_generar_informe expande la selección de proyectos con sus descendientes."""
+        self._setup(main_window)
+        main_window._projects = [(1, "P1"), (2, "P1 > Hijo")]
+        main_window._project_hierarchy = {1: None, 2: 1}
+        main_window._redmine.get_project_custom_fields.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog(selected_project_ids=[1])
+        path = str(tmp_path / "informe.ods")
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox"),
+        ):
+            main_window._generar_informe()
+
+        call_kwargs = main_window._redmine.get_issues.call_args.kwargs
+        assert call_kwargs["project_id"] == [1, 2]
+
+    def test_generar_informe_padre_y_descendiente_no_duplica_ids(self, main_window, tmp_path):
+        """Seleccionar padre y descendiente expande sin duplicar ids."""
+        self._setup(main_window)
+        main_window._projects = [(1, "P1"), (2, "P1 > Hijo")]
+        main_window._project_hierarchy = {1: None, 2: 1}
+        main_window._redmine.get_project_custom_fields.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog(selected_project_ids=[1, 2])
+        path = str(tmp_path / "informe.ods")
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox"),
+        ):
+            main_window._generar_informe()
+
+        call_kwargs = main_window._redmine.get_issues.call_args.kwargs
+        assert call_kwargs["project_id"] == [1, 2]
+
+    def test_generar_informe_sin_proyectos_sigue_usando_none(self, main_window, tmp_path):
+        """Sin selección de proyectos, get_issues se llama con project_id=None (todos)."""
+        self._setup(main_window)
+        main_window._projects = [(1, "P1"), (2, "P1 > Hijo")]
+        main_window._project_hierarchy = {1: None, 2: 1}
+        main_window._redmine.get_project_custom_fields.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog(selected_project_ids=[])
+        path = str(tmp_path / "informe.ods")
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox"),
+        ):
+            main_window._generar_informe()
+
+        call_kwargs = main_window._redmine.get_issues.call_args.kwargs
+        assert call_kwargs["project_id"] is None
+
+    def test_generar_informe_estado_vacio_usa_todas(self, main_window, tmp_path):
+        """selected_status_ids == [] → get_issues(status_filter='*')."""
+        self._setup(main_window)
+        main_window._projects = [(1, "P1")]
+        main_window._project_hierarchy = {1: None}
+        main_window._redmine.get_project_custom_fields.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog(selected_status_ids=[])
+        path = str(tmp_path / "informe.ods")
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox"),
+        ):
+            main_window._generar_informe()
+
+        call_kwargs = main_window._redmine.get_issues.call_args.kwargs
+        assert call_kwargs["status_filter"] == "*"
+
+    def test_generar_informe_estado_unico(self, main_window, tmp_path):
+        """selected_status_ids == [1] → get_issues(status_filter=1)."""
+        self._setup(main_window)
+        main_window._projects = [(1, "P1")]
+        main_window._project_hierarchy = {1: None}
+        main_window._redmine.get_project_custom_fields.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog(selected_status_ids=[1])
+        path = str(tmp_path / "informe.ods")
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox"),
+        ):
+            main_window._generar_informe()
+
+        call_kwargs = main_window._redmine.get_issues.call_args.kwargs
+        assert call_kwargs["status_filter"] == 1
+
+    def test_generar_informe_estados_varios(self, main_window, tmp_path):
+        """selected_status_ids == [1, 2] → get_issues(status_filter=[1, 2])."""
+        self._setup(main_window)
+        main_window._projects = [(1, "P1")]
+        main_window._project_hierarchy = {1: None}
+        main_window._redmine.get_project_custom_fields.return_value = []
+        main_window._redmine.get_project_memberships.return_value = []
+        main_window._redmine.get_issues.return_value = [self._issue()]
+        dlg = self._make_report_dialog(selected_status_ids=[1, 2])
+        path = str(tmp_path / "informe.ods")
+
+        mock_gen_cls = MagicMock(spec=ReportGenerator)
+        with (
+            self._patch_report_dialog(dlg),
+            patch("app.main_window.QFileDialog.getSaveFileName", return_value=(path, "")),
+            patch("app.main_window.ReportGenerator", mock_gen_cls),
+            patch("app.main_window.QMessageBox"),
+        ):
+            main_window._generar_informe()
+
+        call_kwargs = main_window._redmine.get_issues.call_args.kwargs
+        assert call_kwargs["status_filter"] == [1, 2]
 
 
 class TestComposeReportRows:
@@ -1680,13 +1869,14 @@ class TestComposeReportRows:
         assert row[1] == "Proyecto A"           # Proyecto (nombre completo)
         assert row[2] == "Tarea"                # Tracker
         assert row[3] == "Tarea de prueba"      # Título
-        assert row[4] == "Nueva"                # Estado
-        assert row[5] == "Normal"               # Prioridad
-        assert row[6] == "Luis"                 # Asignado a
-        assert row[7] == "Ana"                  # Creado por
-        assert row[11] == 30                    # % Progreso
-        assert row[12] == ""                    # Categoría
-        assert row[14] == "Ana, Luis"           # Usuarios implicados
+        assert row[4] == ""                     # Descripción (vacía por defecto)
+        assert row[5] == "Nueva"                # Estado
+        assert row[6] == "Normal"               # Prioridad
+        assert row[7] == "Luis"                 # Asignado a
+        assert row[8] == "Ana"                  # Creado por
+        assert row[12] == 30                    # % Progreso
+        assert row[13] == ""                    # Categoría
+        assert row[15] == "Ana, Luis"           # Usuarios implicados
 
     def test_convierte_fechas_iso_a_date(self, main_window):
         """Las fechas ISO se convierten a datetime.date; las vacías quedan como ''."""
@@ -1698,18 +1888,18 @@ class TestComposeReportRows:
             updated_on="2026-01-10T12:30:00Z",
         )
         row = main_window._compose_report_rows([iss], DEFAULT_FIELD_KEYS)[0]
-        assert row[8] == date(2026, 1, 1)    # Fecha de creación
-        assert row[9] == date(2026, 1, 5)    # Fecha de inicio
-        assert row[10] == ""                 # Fecha de fin vacía
-        assert row[13] == date(2026, 1, 10)  # Última modificación
+        assert row[9] == date(2026, 1, 1)    # Fecha de creación
+        assert row[10] == date(2026, 1, 5)   # Fecha de inicio
+        assert row[11] == ""                 # Fecha de fin vacía
+        assert row[14] == date(2026, 1, 10)  # Última modificación
 
     def test_progreso_numerico(self, main_window):
         """El % Progreso debe ser numérico (int)."""
         main_window._project_full_names = {}
         iss = self._issue(done_ratio=75)
         row = main_window._compose_report_rows([iss], DEFAULT_FIELD_KEYS)[0]
-        assert row[11] == 75
-        assert isinstance(row[11], int)
+        assert row[12] == 75
+        assert isinstance(row[12], int)
 
     def test_usuarios_implicados_sin_duplicados(self, main_window):
         """La lista de usuarios implicados no repite nombres y se une con ', '."""
@@ -1724,7 +1914,7 @@ class TestComposeReportRows:
             ],
         )
         row = main_window._compose_report_rows([iss], DEFAULT_FIELD_KEYS)[0]
-        assert row[14] == "Ana, Luis, Marta"
+        assert row[15] == "Ana, Luis, Marta"
 
     def test_subconjunto_de_campos_produce_filas_alineadas(self, main_window):
         """Con un subconjunto de claves, cada fila tiene un valor por clave en orden."""
@@ -1734,6 +1924,50 @@ class TestComposeReportRows:
         rows = main_window._compose_report_rows([iss], field_keys)
         assert len(rows) == 1
         assert rows[0] == [1, "Tarea de prueba", "Nueva", 30]
+
+    def test_descripcion_vuelca_issue_description(self, main_window):
+        """La clave 'descripcion' devuelve issue.description en la columna."""
+        main_window._project_full_names = {}
+        iss = self._issue(description="Descripción de la tarea")
+        row = main_window._compose_report_rows([iss], ["descripcion"])[0]
+        assert row[0] == "Descripción de la tarea"
+
+    def test_descripcion_vacia_sin_description(self, main_window):
+        """Sin descripción, la columna 'Descripción' queda vacía."""
+        main_window._project_full_names = {}
+        iss = self._issue(description="")
+        row = main_window._compose_report_rows([iss], ["descripcion"])[0]
+        assert row[0] == ""
+
+    def test_descripcion_se_escribe_en_ods(self, main_window, tmp_path):
+        """La columna 'Descripción' se escribe en el ODS con el contenido de la tarea (tarea 15.4)."""
+        main_window._project_full_names = {1: "Proyecto A"}
+        main_window._settings.redmine_url = "https://redmine.example.com"
+        con_desc = self._issue(id=1, description="Descripción de la tarea")
+        sin_desc = self._issue(id=2, subject="Otra", description="")
+        field_keys = ["id", "titulo", "descripcion"]
+        rows = main_window._compose_report_rows([con_desc, sin_desc], field_keys)
+        gen = ReportGenerator(["ID", "Título", "Descripción"])
+        for row in rows:
+            gen.add_row(row)
+        out = tmp_path / "informe.ods"
+        gen.write(str(out))
+
+        doc = load(str(out))
+        tables = doc.spreadsheet.getElementsByType(table.Table)
+        assert len(tables) == 1
+        rows_ods = tables[0].getElementsByType(table.TableRow)
+        # Cabecera + 2 filas de datos
+        assert len(rows_ods) == 3
+        texts = []
+        for r in rows_ods[1:]:
+            cells = r.getElementsByType(table.TableCell)
+            texts.append("".join(
+                t.firstChild.data
+                for t in cells[2].getElementsByType(text.P)
+                if t.firstChild is not None
+            ))
+        assert texts == ["Descripción de la tarea", ""]
 
     def test_url_correcta(self, main_window):
         """El campo url es la URL absoluta {redmine_url}/issues/{id}."""

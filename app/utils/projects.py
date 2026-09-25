@@ -43,3 +43,41 @@ def build_project_full_names(projects) -> dict[int, str]:
             hops += 1
         result[p.id] = " > ".join(reversed(names))
     return result
+
+
+def descendant_project_ids(
+    project_ids: list[int], hierarchy: dict[int, int | None]
+) -> list[int]:
+    """Expande una lista de proyectos a sus descendientes transitivos.
+
+    Devuelve cada id de ``project_ids`` más todos sus descendientes (hijos,
+    nietos, etc.) según el mapa ``hierarchy`` (``project_id -> parent_id``),
+    sin duplicados y en orden estable: los ids de entrada primero y sus
+    descendientes en orden de aparición (recorrido en profundidad).
+
+    Args:
+        project_ids: Ids de proyecto seleccionados.
+        hierarchy: Mapa ``project_id -> parent_id`` (None para raíces).
+
+    Returns:
+        list[int]: Ids expandidos, sin duplicados.
+    """
+    children: dict[int, list[int]] = {}
+    for pid, parent_id in hierarchy.items():
+        if parent_id is not None:
+            children.setdefault(parent_id, []).append(pid)
+
+    result: list[int] = []
+    seen: set[int] = set()
+
+    def _add_with_descendants(pid: int):
+        if pid in seen:
+            return
+        seen.add(pid)
+        result.append(pid)
+        for child in children.get(pid, []):
+            _add_with_descendants(child)
+
+    for pid in project_ids:
+        _add_with_descendants(pid)
+    return result

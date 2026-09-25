@@ -36,6 +36,7 @@ from app.dialogs.report_dialog import ReportDialog
 from app.services.report_generator import ReportGenerator, REPORT_FIELDS
 from app.tray_icon import TrayManager
 from app.utils.constants import APP_DISPLAY_NAME
+from app.utils.projects import descendant_project_ids
 from app.widgets.searchable_combo import make_searchable_combo, update_completer_model
 
 
@@ -524,7 +525,9 @@ class MainWindow(QMainWindow):
         """Usuarios implicables en el informe (miembros de los proyectos en filtro).
 
         Si el FilterBar tiene proyectos seleccionados, usa esos; si no, usa
-        todos los proyectos cargados. Deduplica por user_id > 0.
+        todos los proyectos cargados. Deduplica por user_id > 0 y ordena:
+        el usuario autenticado primero (si procede) y el resto alfabéticamente
+        por nombre sin distinguir mayúsculas (patrón de TaskDialog).
         """
         if not self._redmine:
             return []
@@ -544,7 +547,18 @@ class MainWindow(QMainWindow):
             if mid not in seen:
                 seen.add(mid)
                 unique.append((mid, mname))
-        return unique
+        # Ordenar: usuario actual primero, resto alfabético (patrón TaskDialog)
+        current_user = None
+        other_members: list[tuple[int, str]] = []
+        for mid, mname in unique:
+            if mid == self._current_user_id and self._current_user_id:
+                current_user = (mid, mname)
+            else:
+                other_members.append((mid, mname))
+        other_members.sort(key=lambda x: x[1].lower())
+        if current_user:
+            return [current_user] + other_members
+        return other_members
 
     def _report_custom_fields_for_projects(
         self, project_ids: list[int] | None
@@ -599,15 +613,27 @@ class MainWindow(QMainWindow):
 
         dlg = ReportDialog(self._projects, users, preselected, self,
                            custom_fields=custom_fields,
-                           custom_fields_provider=self._report_custom_fields_for_projects)
+                           custom_fields_provider=self._report_custom_fields_for_projects,
+                           statuses=self._statuses)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
         project_ids = dlg.selected_project_ids or None
+        if project_ids:
+            # Incluir las tareas de los subproyectos descendientes (hijos, nietos…)
+            project_ids = descendant_project_ids(project_ids, self._project_hierarchy)
+        # Traducir la selección de estados: vacío → "*" (todas), uno → id, varios → lista
+        status_ids = dlg.selected_status_ids
+        if not status_ids:
+            status_filter = "*"
+        elif len(status_ids) == 1:
+            status_filter = status_ids[0]
+        else:
+            status_filter = status_ids
         try:
             issues = self._redmine.get_issues(
                 project_id=project_ids,
-                status_filter="*",
+                status_filter=status_filter,
                 created_on_from=dlg.created_from,
                 created_on_to=dlg.created_to,
                 include_journals=True,
@@ -696,6 +722,8 @@ class MainWindow(QMainWindow):
             return issue.tracker_name
         if key == "titulo":
             return issue.subject
+        if key == "descripcion":
+            return issue.description
         if key == "estado":
             return issue.status_name
         if key == "prioridad":

@@ -10,9 +10,9 @@ from app.services.report_generator import (
     REPORT_FIELDS, DEFAULT_FIELD_KEYS, REPORT_COLUMNS,
 )
 
-# Claves canónicas de los 17 campos del informe (cambio informe-campos-seleccionables)
+# Claves canónicas de los 18 campos del informe (cambio mejoras-generacion-informes)
 EXPECTED_FIELD_KEYS = [
-    "id", "proyecto", "tracker", "titulo", "estado", "prioridad",
+    "id", "proyecto", "tracker", "titulo", "descripcion", "estado", "prioridad",
     "asignado_a", "creado_por", "fecha_creacion", "fecha_inicio",
     "fecha_fin", "progreso", "categoria", "ultima_modificacion",
     "usuarios_implicados", "url", "comentarios",
@@ -56,19 +56,19 @@ class TestSanitizeSheetName:
 class TestReportFields:
     """Tests del catálogo REPORT_FIELDS (tarea 1.1)."""
 
-    def test_report_fields_contiene_17_claves_en_orden_canonico(self):
-        """REPORT_FIELDS debe tener las 17 claves en el orden canónico."""
+    def test_report_fields_contiene_18_claves_en_orden_canonico(self):
+        """REPORT_FIELDS debe tener las 18 claves en el orden canónico."""
         assert [key for key, _ in REPORT_FIELDS] == EXPECTED_FIELD_KEYS
-        assert len(REPORT_FIELDS) == 17
+        assert len(REPORT_FIELDS) == 18
 
     def test_default_field_keys_incluye_todas_las_claves(self):
         """DEFAULT_FIELD_KEYS debe contener todas las claves en orden canónico."""
         assert DEFAULT_FIELD_KEYS == EXPECTED_FIELD_KEYS
 
     def test_report_columns_son_las_etiquetas_por_compatibilidad(self):
-        """REPORT_COLUMNS debe seguir siendo la lista de etiquetas (17)."""
+        """REPORT_COLUMNS debe seguir siendo la lista de etiquetas (18)."""
         assert REPORT_COLUMNS == [label for _, label in REPORT_FIELDS]
-        assert len(REPORT_COLUMNS) == 17
+        assert len(REPORT_COLUMNS) == 18
 
 
 class TestReportGenerator:

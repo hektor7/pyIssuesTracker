@@ -7,15 +7,17 @@ del rango de fechas de creación.
 from unittest.mock import patch
 
 import pytest
-from PyQt6.QtCore import QDate
-from PyQt6.QtWidgets import QDialog
+from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtWidgets import QDialog, QGroupBox
 
 from app.dialogs.report_dialog import ReportDialog
 from app.services.report_generator import REPORT_FIELDS, DEFAULT_FIELD_KEYS
+from app.widgets.multi_select_combo import MultiSelectCombo
 
 
 PROJECTS = [(1, "Proyecto A"), (2, "Proyecto B"), (3, "Proyecto C")]
 USERS = [(10, "Ana"), (11, "Luis"), (12, "Marta")]
+STATUSES = [(1, "Nueva"), (2, "En curso"), (3, "Resuelta")]
 
 
 @pytest.fixture
@@ -183,9 +185,9 @@ class TestSeleccionTodos:
 class TestCamposInforme:
     """(g) Selección de campos del informe (cambio informe-campos-seleccionables)."""
 
-    def test_grupo_con_17_casillas_todas_marcadas(self, dialog):
+    def test_grupo_con_18_casillas_todas_marcadas(self, dialog):
         """El grupo 'Campos del informe' tiene una casilla por campo, todas marcadas."""
-        assert len(dialog._field_checkboxes) == 17
+        assert len(dialog._field_checkboxes) == 18
         assert set(dialog._field_checkboxes) == {key for key, _ in REPORT_FIELDS}
         for cb in dialog._field_checkboxes.values():
             assert cb.isChecked()
@@ -194,6 +196,13 @@ class TestCamposInforme:
         """selected_fields devuelve todas las claves en el orden de REPORT_FIELDS."""
         assert dialog.selected_fields == DEFAULT_FIELD_KEYS
 
+    def test_selected_fields_incluye_descripcion_por_defecto(self, dialog):
+        """selected_fields incluye 'descripcion' por defecto, justo tras 'titulo'."""
+        assert "descripcion" in dialog.selected_fields
+        assert dialog.selected_fields.index("descripcion") == (
+            dialog.selected_fields.index("titulo") + 1
+        )
+
     def test_desmarcar_reduce_selected_fields(self, dialog):
         """Al desmarcar casillas, selected_fields se reduce y mantiene el orden."""
         dialog._field_checkboxes["url"].setChecked(False)
@@ -201,7 +210,7 @@ class TestCamposInforme:
         assert dialog.selected_fields == [
             key for key, _ in REPORT_FIELDS if key not in ("url", "comentarios")
         ]
-        assert len(dialog.selected_fields) == 15
+        assert len(dialog.selected_fields) == 16
 
     def test_sin_campos_marcados_no_acepta(self, dialog):
         """Si se desmarcan todos los campos, accept() avisa y no acepta."""
@@ -343,3 +352,90 @@ class TestCamposPersonalizadosRecalculables:
         dlg._projects_combo.set_selected_ids([1])
         assert dlg._custom_fields == []
         assert not dlg._custom_field_checkboxes
+
+
+class TestFiltroEstado:
+    """Filtro por estado de la tarea del informe (tareas 11.1-11.3)."""
+
+    def test_grupo_estado_existe_con_todas_por_defecto(self, qapp):
+        """El grupo 'Estado de la tarea' existe con _status_combo y 'Todas' por defecto."""
+        dlg = ReportDialog(PROJECTS, USERS, statuses=STATUSES, parent=None)
+        assert hasattr(dlg, "_status_combo")
+        assert isinstance(dlg._status_combo, MultiSelectCombo)
+        assert dlg.selected_status_ids == []
+
+    def test_seleccionar_un_estado_devuelve_su_id(self, qapp):
+        """Al marcar un estado, selected_status_ids == [id]."""
+        dlg = ReportDialog(PROJECTS, USERS, statuses=STATUSES, parent=None)
+        dlg._status_combo.set_selected_ids([2])
+        assert dlg.selected_status_ids == [2]
+
+    def test_seleccionar_varios_estados_lista_ordenada(self, qapp):
+        """Al marcar varios estados, selected_status_ids es la lista ordenada."""
+        dlg = ReportDialog(PROJECTS, USERS, statuses=STATUSES, parent=None)
+        dlg._status_combo.set_selected_ids([3, 1])
+        assert dlg.selected_status_ids == [1, 3]
+
+    def test_catalogo_vacio_solo_todas(self, qapp):
+        """Con catálogo de estados vacío, el grupo muestra solo 'Todas'."""
+        dlg = ReportDialog(PROJECTS, USERS, statuses=[], parent=None)
+        ids = [
+            dlg._status_combo._list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(dlg._status_combo._list.count())
+        ]
+        assert ids == [MultiSelectCombo.ALL]
+        assert dlg.selected_status_ids == []
+
+    def test_sin_statuses_el_grupo_muestra_solo_todas(self, dialog):
+        """Sin statuses (None), el grupo muestra solo 'Todas'."""
+        ids = [
+            dialog._status_combo._list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(dialog._status_combo._list.count())
+        ]
+        assert ids == [MultiSelectCombo.ALL]
+        assert dialog.selected_status_ids == []
+
+
+class TestGruposDialogo:
+    """El ReportDialog muestra los cinco grupos de filtros (tarea 15.1)."""
+
+    def test_cinco_grupos_con_sus_titulos(self, dialog):
+        """Existen los cinco QGroupBox con los títulos esperados."""
+        titles = [
+            g.title()
+            for g in dialog.findChildren(QGroupBox)
+            if g.title()
+        ]
+        for expected in [
+            "Campos del informe",
+            "Usuarios implicados",
+            "Fechas de creación",
+            "Estado de la tarea",
+            "Proyectos",
+        ]:
+            assert expected in titles
+
+
+class TestTooltipsCombos:
+    """Tooltips con el nombre completo en los combos del diálogo (tareas 15.2-15.3)."""
+
+    def test_combo_proyectos_tooltip_nombre_completo(self, qapp):
+        """Cada ítem del combo de proyectos tiene tooltip con el nombre completo."""
+        dlg = ReportDialog(
+            [(1, "Padre muy largo > Hijo muy largo"), (2, "Otro")],
+            USERS, parent=None,
+        )
+        for i in range(dlg._projects_combo._list.count()):
+            item = dlg._projects_combo._list.item(i)
+            assert item.toolTip() == item.text()
+
+    def test_combo_usuarios_tooltip_nombre_largo(self, qapp):
+        """Cada ítem del combo de usuarios tiene tooltip con el nombre del usuario."""
+        dlg = ReportDialog(
+            PROJECTS,
+            [(10, "Un nombre de usuario muy largo para el combo"), (11, "Ana")],
+            parent=None,
+        )
+        for i in range(dlg._users_combo._list.count()):
+            item = dlg._users_combo._list.item(i)
+            assert item.toolTip() == item.text()

@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from app.utils.projects import build_project_full_names
+from app.utils.projects import build_project_full_names, descendant_project_ids
 
 
 def _proj(pid, name, parent_id=None):
@@ -75,3 +75,31 @@ class TestBuildProjectFullNames:
         assert 1 in result and 2 in result
         assert "A" in result[1]
         assert "B" in result[2]
+
+
+class TestDescendantProjectIds:
+    """descendant_project_ids expande un proyecto a sus descendientes transitivos (tareas 9.1-9.2)."""
+
+    def test_padre_incluye_descendientes_transitivos(self):
+        """Un padre devuelve su id más hijos, nietos, etc. (recorrido en profundidad)."""
+        hierarchy = {1: None, 2: 1, 3: 2, 4: 1}
+        assert descendant_project_ids([1], hierarchy) == [1, 2, 3, 4]
+
+    def test_proyecto_sin_hijos_devuelve_solo_su_id(self):
+        """Un proyecto sin descendientes devuelve solo su propio id."""
+        hierarchy = {1: None, 2: 1}
+        assert descendant_project_ids([2], hierarchy) == [2]
+
+    def test_lista_vacia_devuelve_lista_vacia(self):
+        """Con la lista de entrada vacía, el resultado es vacío."""
+        assert descendant_project_ids([], {}) == []
+
+    def test_orden_estable_sin_duplicados(self):
+        """Seleccionar padre y descendiente no duplica ids y mantiene el orden."""
+        hierarchy = {1: None, 2: 1, 3: 2, 4: 1}
+        assert descendant_project_ids([1, 2], hierarchy) == [1, 2, 3, 4]
+
+    def test_varios_padres_independientes(self):
+        """Varios padres se expanden cada uno con sus descendientes."""
+        hierarchy = {1: None, 2: 1, 3: None, 4: 3}
+        assert descendant_project_ids([1, 3], hierarchy) == [1, 2, 3, 4]

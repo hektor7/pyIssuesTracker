@@ -634,6 +634,40 @@ class TestParseJournals:
         issue = client._issue_from_json(raw)
         assert issue.journals == []
 
+    def test_parse_journals_conserva_details(self, client):
+        """_parse_journals conserva los details (propiedad, valor anterior, valor nuevo)."""
+        raw = {
+            "id": 1,
+            "subject": "S",
+            "author": {"id": 1, "name": "Ana"},
+            "journals": [
+                {
+                    "id": 21,
+                    "user": {"id": 3, "name": "Carlos"},
+                    "notes": "",
+                    "details": [
+                        {"property": "assigned_to_id", "old_value": "2", "new_value": "3"},
+                    ],
+                },
+            ],
+        }
+        issue = client._issue_from_json(raw)
+        j = issue.journals[0]
+        assert j.details == [
+            {"property": "assigned_to_id", "old_value": "2", "new_value": "3"},
+        ]
+
+    def test_parse_journals_details_vacio_sin_clave(self, client):
+        """Un journal sin la clave details debe tener la lista vacía."""
+        raw = {
+            "id": 1,
+            "subject": "S",
+            "author": {"id": 1, "name": "Ana"},
+            "journals": [{"id": 21, "user": {"id": 3, "name": "Carlos"}, "notes": ""}],
+        }
+        issue = client._issue_from_json(raw)
+        assert issue.journals[0].details == []
+
 
 class TestParticipantIds:
     """Tests para RedmineIssue.participant_ids (tarea 1.2)."""
@@ -668,6 +702,57 @@ class TestParticipantIds:
         """Sin participantes, la lista debe estar vacía."""
         issue = RedmineIssue(id=1, subject="S")
         assert issue.participant_ids == []
+
+    def test_participant_ids_incluye_asignados_historicos(self):
+        """participant_ids incluye los asignados históricos de los details."""
+        issue = RedmineIssue(
+            id=1,
+            subject="S",
+            author_id=1,
+            assigned_to_id=5,
+            journals=[
+                RedmineJournal(
+                    id=11, user_id=4, user_name="Diana", notes="", created_on="",
+                    details=[{"property": "assigned_to_id", "old_value": "2", "new_value": "3"}],
+                ),
+            ],
+        )
+        assert issue.participant_ids == [1, 5, 4, 2, 3]
+
+    def test_participant_ids_historicos_sin_duplicados(self):
+        """Un asignado histórico que además es autor no se duplica."""
+        issue = RedmineIssue(
+            id=1,
+            subject="S",
+            author_id=2,
+            assigned_to_id=5,
+            journals=[
+                RedmineJournal(
+                    id=11, user_id=2, user_name="Ana", notes="", created_on="",
+                    details=[{"property": "assigned_to_id", "old_value": "2", "new_value": "3"}],
+                ),
+            ],
+        )
+        assert issue.participant_ids == [2, 5, 3]
+
+    def test_participant_ids_historicos_ignora_no_numericos(self):
+        """Los valores no numéricos o vacíos de los details se ignoran."""
+        issue = RedmineIssue(
+            id=1,
+            subject="S",
+            author_id=1,
+            assigned_to_id=5,
+            journals=[
+                RedmineJournal(
+                    id=11, user_id=4, user_name="Diana", notes="", created_on="",
+                    details=[
+                        {"property": "assigned_to_id", "old_value": "", "new_value": "abc"},
+                        {"property": "assigned_to_id", "old_value": None, "new_value": "3"},
+                    ],
+                ),
+            ],
+        )
+        assert issue.participant_ids == [1, 5, 4, 3]
 
 
 class TestRolesForUser:
@@ -718,6 +803,78 @@ class TestRolesForUser:
         issue = self._issue()
         assert issue.roles_for_user(99) == set()
 
+    def test_participant_role_from_historical_assignment_old_value(self):
+        """El valor anterior de un cambio de assigned_to_id otorga 'participante'."""
+        issue = self._issue(assigned_to_id=5, journals=[
+            RedmineJournal(
+                id=11, user_id=4, user_name="Diana", notes="", created_on="",
+                details=[{"property": "assigned_to_id", "old_value": "2", "new_value": "3"}],
+            ),
+        ])
+        assert issue.roles_for_user(2) == {"participante"}
+
+    def test_participant_role_from_historical_assignment_new_value(self):
+        """El valor nuevo de un cambio de assigned_to_id otorga 'participante'."""
+        issue = self._issue(assigned_to_id=5, journals=[
+            RedmineJournal(
+                id=11, user_id=4, user_name="Diana", notes="", created_on="",
+                details=[{"property": "assigned_to_id", "old_value": "2", "new_value": "3"}],
+            ),
+        ])
+        assert issue.roles_for_user(3) == {"participante"}
+
+    def test_participante_por_notas_se_mantiene_con_details(self):
+        """Con details presentes, el autor de notas sigue siendo 'participante'."""
+        issue = self._issue(assigned_to_id=5, journals=[
+            RedmineJournal(
+                id=11, user_id=7, user_name="Eva", notes="Comentario", created_on="",
+                details=[{"property": "assigned_to_id", "old_value": "2", "new_value": "3"}],
+            ),
+        ])
+        assert issue.roles_for_user(7) == {"actualizador", "participante"}
+
+    def test_participante_por_asignacion_actual_se_mantiene_con_details(self):
+        """El asignado actual sigue siendo 'participante' aunque haya details."""
+        issue = self._issue(assigned_to_id=5, journals=[
+            RedmineJournal(
+                id=11, user_id=7, user_name="Eva", notes="", created_on="",
+                details=[{"property": "assigned_to_id", "old_value": "2", "new_value": "3"}],
+            ),
+        ])
+        assert issue.roles_for_user(5) == {"participante"}
+
+    def test_participant_role_from_legacy_assigned_to_property(self):
+        """La propiedad legada 'assigned_to' también otorga 'participante'."""
+        issue = self._issue(assigned_to_id=5, journals=[
+            RedmineJournal(
+                id=11, user_id=4, user_name="Diana", notes="", created_on="",
+                details=[{"property": "assigned_to", "old_value": "2", "new_value": "3"}],
+            ),
+        ])
+        assert issue.roles_for_user(2) == {"participante"}
+
+    def test_participant_role_historico_con_valores_int(self):
+        """Los details con old_value/new_value como int también otorgan 'participante'."""
+        issue = self._issue(assigned_to_id=5, journals=[
+            RedmineJournal(
+                id=11, user_id=4, user_name="Diana", notes="", created_on="",
+                details=[{"property": "assigned_to_id", "old_value": 2, "new_value": 3}],
+            ),
+        ])
+        assert issue.roles_for_user(2) == {"participante"}
+        assert issue.roles_for_user(3) == {"participante"}
+
+    def test_participante_historico_que_ademas_comento(self):
+        """Un asignado histórico que además comentó cumple 'participante' y casa en el filtro (tarea 15.5)."""
+        issue = self._issue(assigned_to_id=5, journals=[
+            RedmineJournal(
+                id=11, user_id=2, user_name="Ana", notes="Comentario", created_on="",
+                details=[{"property": "assigned_to_id", "old_value": "2", "new_value": "3"}],
+            ),
+        ])
+        assert "participante" in issue.roles_for_user(2)
+        assert issue.matches_user_filter({2}, {"participante"})
+
 
 class TestMatchesUserFilter:
     """Tests para RedmineIssue.matches_user_filter (tarea 2.4)."""
@@ -765,6 +922,16 @@ class TestMatchesUserFilter:
         issue = self._issue(author_id=1)
         assert issue.matches_user_filter(set(), {"creador"})
         assert issue.matches_user_filter(set(), {"actualizador"})
+
+    def test_matches_participante_historico_sin_notas(self):
+        """Un asignado histórico sin journals con notas casa con el rol 'participante'."""
+        issue = self._issue(assigned_to_id=5, journals=[
+            RedmineJournal(
+                id=11, user_id=4, user_name="Diana", notes="", created_on="",
+                details=[{"property": "assigned_to_id", "old_value": "2", "new_value": "3"}],
+            ),
+        ])
+        assert issue.matches_user_filter({2}, {"participante"})
 
 
 class TestGetIssuesCreatedOn:
@@ -835,3 +1002,37 @@ class TestGetIssuesIncludeJournals:
         assert len(issues) == 1
         assert len(issues[0].journals) == 2
         assert issues[0].journals[0].user_id == 3
+
+
+class TestGetIssuesStatusFilter:
+    """Tests para status_filter en get_issues (tarea 11.5)."""
+
+    @pytest.fixture
+    def client(self):
+        c = RedmineClient("https://redmine.example.com", "token")
+        c._get = MagicMock(return_value={"issues": []})
+        return c
+
+    def test_status_filter_lista_une_con_coma(self, client):
+        """Con status_filter=[1, 2] envía status_id=1,2."""
+        client.get_issues(status_filter=[1, 2])
+        _, kwargs = client._get.call_args
+        assert kwargs["params"]["status_id"] == "1,2"
+
+    def test_status_filter_open_no_regresion(self, client):
+        """Con status_filter='open' envía status_id=open (comportamiento actual)."""
+        client.get_issues(status_filter="open")
+        _, kwargs = client._get.call_args
+        assert kwargs["params"]["status_id"] == "open"
+
+    def test_status_filter_int_escalar(self, client):
+        """Con status_filter=1 envía status_id=1."""
+        client.get_issues(status_filter=1)
+        _, kwargs = client._get.call_args
+        assert kwargs["params"]["status_id"] == 1
+
+    def test_status_filter_none_no_envia_parametro(self, client):
+        """Con status_filter=None no se envía status_id."""
+        client.get_issues(status_filter=None)
+        _, kwargs = client._get.call_args
+        assert "status_id" not in kwargs["params"]

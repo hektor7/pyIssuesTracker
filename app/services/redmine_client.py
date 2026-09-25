@@ -50,8 +50,10 @@ class RedmineIssue:
     def participant_ids(self) -> list[int]:
         """Ids de los usuarios implicados en la tarea, sin duplicados.
 
-        Unión (en orden de inserción) de author_id, assigned_to_id y los
-        autores de los journals, excluyendo los ids 0 (sin usuario).
+        Unión (en orden de inserción) de author_id, assigned_to_id, los
+        autores de los journals y los asignados históricos (old_value/new_value
+        de los details de asignación), excluyendo los ids 0 (sin usuario) y
+        los valores no numéricos.
         """
         ids: list[int] = []
         seen: set[int] = set()
@@ -63,6 +65,21 @@ class RedmineIssue:
             if j.user_id and j.user_id not in seen:
                 seen.add(j.user_id)
                 ids.append(j.user_id)
+        # Asignados históricos: old_value/new_value de details de asignación
+        for j in self.journals:
+            for d in j.details:
+                if d.get("property") not in ("assigned_to_id", "assigned_to"):
+                    continue
+                for raw in (d.get("old_value"), d.get("new_value")):
+                    if raw is None:
+                        continue
+                    try:
+                        uid = int(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if uid and uid not in seen:
+                        seen.add(uid)
+                        ids.append(uid)
         return ids
 
     def roles_for_user(self, user_id: int) -> set[str]:
@@ -72,7 +89,9 @@ class RedmineIssue:
         - "creador": el usuario es el autor del issue.
         - "actualizador": el usuario es autor de cualquier journal.
         - "participante": el usuario es autor de algún journal con notas,
-          o es el asignado actual.
+          es el asignado actual, o tuvo la tarea asignada en algún cambio de
+          `assigned_to_id`/`assigned_to` registrado en los `details` de los
+          journals (asignación histórica).
         """
         roles: set[str] = set()
         if user_id and user_id == self.author_id:
@@ -84,6 +103,20 @@ class RedmineIssue:
                 roles.add("participante")
         if user_id and user_id == self.assigned_to_id:
             roles.add("participante")
+        # Asignación histórica: el usuario fue old_value o new_value de un
+        # cambio de asignado en los details de algún journal. La comparación
+        # se hace con str(...) en ambos lados (D12) para soportar valores
+        # como cadena o como entero, evitando comparar None.
+        if user_id:
+            uid_str = str(user_id)
+            for j in self.journals:
+                for d in j.details:
+                    if d.get("property") in ("assigned_to_id", "assigned_to"):
+                        old = d.get("old_value")
+                        new = d.get("new_value")
+                        if (old is not None and str(old) == uid_str) or \
+                           (new is not None and str(new) == uid_str):
+                            roles.add("participante")
         return roles
 
     def matches_user_filter(self, user_ids: set[int], roles: set[str]) -> bool:
@@ -153,6 +186,7 @@ class RedmineJournal:
     user_name: str = ""
     notes: str = ""
     created_on: str = ""
+    details: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -440,7 +474,7 @@ class RedmineClient:
     def get_issues(
         self,
         project_id: int | list[int] | None = None,
-        status_filter: str = "open",
+        status_filter: str | int | list[int] | None = "open",
         category_id: int | None = None,
         priority_id: int | None = None,
         assigned_to_id: int | str | list | None = None,
@@ -472,7 +506,11 @@ class RedmineClient:
                 project_id = None
         if project_id:
             params["project_id"] = project_id
-        if status_filter:
+        # status_filter: escalar (str/int) como hoy; lista → varios ids separados por coma
+        if isinstance(status_filter, list):
+            if status_filter:
+                params["status_id"] = ",".join(map(str, status_filter))
+        elif status_filter:
             params["status_id"] = status_filter
         if category_id:
             params["category_id"] = category_id
@@ -592,15 +630,26 @@ class RedmineClient:
 
         Conserva TODOS los journals, incluidos los que no tienen notas
         (cambios de atributos), para poder clasificar el rol "actualizador".
+        Cada journal conserva sus `details` (cambios de atributo) normalizados
+        a dicts con `property`, `old_value` y `new_value` (valores tal cual,
+        pueden ser cadenas o None).
         """
         journals = []
         for j in journals_raw:
+            details = []
+            for d in j.get("details", []) or []:
+                details.append({
+                    "property": d.get("property"),
+                    "old_value": d.get("old_value"),
+                    "new_value": d.get("new_value"),
+                })
             journals.append(RedmineJournal(
                 id=j.get("id", 0),
                 user_id=(j.get("user") or {}).get("id", 0),
                 user_name=(j.get("user") or {}).get("name", ""),
                 notes=j.get("notes", ""),
                 created_on=j.get("created_on", ""),
+                details=details,
             ))
         return journals
 

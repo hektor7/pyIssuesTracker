@@ -26,6 +26,7 @@ REPORT_FIELDS = [
     ("proyecto", "Proyecto"),
     ("tracker", "Tracker"),
     ("titulo", "Título"),
+    ("descripcion", "Descripción"),
     ("estado", "Estado"),
     ("prioridad", "Prioridad"),
     ("asignado_a", "Asignado a"),
