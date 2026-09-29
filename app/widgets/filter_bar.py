@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+import logging
 
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (
@@ -7,6 +8,8 @@ from PyQt6.QtWidgets import (
 )
 
 from app.widgets.multi_select_combo import MultiSelectCombo
+
+logger = logging.getLogger(__name__)
 
 
 class FilterBar(QWidget):
@@ -18,10 +21,12 @@ class FilterBar(QWidget):
     fijar_cambiado = pyqtSignal(bool)
     busqueda_cambiada = pyqtSignal(str)
     fecha_cambiada = pyqtSignal(str, str)  # due_date_from, due_date_to
+    ids_descartados = pyqtSignal(list)  # IDs de proyecto huérfanos descartados
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._projects: list[tuple[int, str]] = []
+        self._discarded_project_ids: list[int] = []
         self._current_date_from: str | None = None
         self._current_date_to: str | None = None
         main_layout = QVBoxLayout(self)
@@ -147,15 +152,48 @@ class FilterBar(QWidget):
     def populate_projects(self, projects: list[tuple[int, str]], hierarchy: dict[int, int | None] | None = None):
         # El nombre recibido ya es el nombre completo (D8): se usa tal cual,
         # sin indentación. La firma mantiene `hierarchy` por compatibilidad.
+        # Si hay una selección previa (restaurada o del usuario), se intercala
+        # con los IDs válidos de la nueva lista y se descartan los huérfanos.
+        prev_selected = [
+            pid for pid in self._project_combo.selected_ids()
+            if pid != MultiSelectCombo.ALL
+        ]
         self._projects = projects
         self._project_combo.set_items(list(projects))
+        if prev_selected:
+            self._sanear_ids(prev_selected)
 
     def select_projects(self, project_ids: list[int]):
-        """Selecciona los proyectos dados (lista vacía o [0] → Todos)."""
+        """Selecciona los proyectos dados (lista vacía o [0] → Todos).
+
+        Los IDs no presentes en la lista de proyectos cargados se descartan
+        (registro WARNING + señal ids_descartados) antes de seleccionar.
+        """
         if not project_ids or project_ids == [0]:
             self._project_combo.set_selected_ids([MultiSelectCombo.ALL])
         else:
-            self._project_combo.set_selected_ids(project_ids)
+            self._sanear_ids(project_ids)
+
+    def _sanear_ids(self, project_ids: list[int]):
+        """Descarta IDs de proyecto huérfanos contra la lista cargada.
+
+        Los IDs válidos se seleccionan; los huérfanos se registran (WARNING),
+        se guardan en `_discarded_project_ids` y se emiten por `ids_descartados`.
+        Si no queda ningún ID válido, la selección vuelve a "Todos".
+        """
+        valid_ids = {pid for pid, _ in self._projects}
+        discarded = [pid for pid in project_ids if pid not in valid_ids]
+        kept = [pid for pid in project_ids if pid in valid_ids]
+        self._discarded_project_ids = discarded
+        if discarded:
+            logger.warning(
+                "IDs de proyecto huérfanos descartados en el filtro: %s", discarded
+            )
+            self.ids_descartados.emit(list(discarded))
+        if kept:
+            self._project_combo.set_selected_ids(kept)
+        else:
+            self._project_combo.set_selected_ids([MultiSelectCombo.ALL])
 
     def populate_priorities(self, priorities: list[tuple[int, str]]):
         self._priority_combo.blockSignals(True)

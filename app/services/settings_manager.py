@@ -20,7 +20,6 @@ from app.utils.constants import (
     KEY_PROXY_PASSWORD,
     KEY_THEME,
     KEY_FILTER_PROJECT,
-    KEY_FILTER_PROJECT_NAME,
     KEY_FILTER_PROJECTS,
     KEY_FILTER_FIXED,
     KEY_FILTER_STATUS,
@@ -192,14 +191,6 @@ class SettingsManager:
     @filter_project_id.setter
     def filter_project_id(self, value: int):
         self._settings.setValue(KEY_FILTER_PROJECT, value)
-
-    @property
-    def filter_project_name(self) -> str:
-        return self._settings.value(KEY_FILTER_PROJECT_NAME, "")
-
-    @filter_project_name.setter
-    def filter_project_name(self, value: str):
-        self._settings.setValue(KEY_FILTER_PROJECT_NAME, value)
 
     @property
     def filter_fixed(self) -> bool:

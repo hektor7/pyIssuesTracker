@@ -457,6 +457,53 @@ class TestMultiSelectComboFallbackBoton:
         assert combo._button.toolTip() == "Sin asignar"
 
 
+class TestFilterBarSaneadoHuerfanos:
+    """1.6: saneado de IDs de proyecto huérfanos al poblar/restaurar el filtro.
+
+    Los IDs no presentes en la lista de proyectos cargados se descartan y se
+    reportan, SIN alterar el fallback visual de MultiSelectCombo con IDs
+    desconocidos (cubierto por TestMultiSelectComboFallbackBoton).
+    """
+
+    def test_select_projects_descarta_ids_huerfanos(self, qapp):
+        fb = FilterBar()
+        fb.populate_projects([(1, "A"), (2, "B")])
+        fb.select_projects([999, 2])
+        assert fb.selected_project_ids == [2]
+        assert fb._discarded_project_ids == [999]
+
+    def test_select_projects_todos_huerfanos_resetea_a_todos(self, qapp):
+        fb = FilterBar()
+        fb.populate_projects([(1, "A")])
+        fb.select_projects([999])
+        assert fb.selected_project_ids == []
+        assert fb._discarded_project_ids == [999]
+
+    def test_populate_projects_descarta_seleccion_previa_huerfana(self, qapp):
+        fb = FilterBar()
+        fb.populate_projects([(1, "A"), (2, "B")])
+        fb.select_projects([2])
+        fb.populate_projects([(1, "A")])  # el proyecto 2 ya no existe
+        assert fb.selected_project_ids == []
+        assert fb._discarded_project_ids == [2]
+
+    def test_ids_validos_se_mantienen(self, qapp):
+        fb = FilterBar()
+        fb.populate_projects([(1, "A"), (2, "B")])
+        fb.select_projects([1, 2])
+        assert fb.selected_project_ids == [1, 2]
+        assert fb._discarded_project_ids == []
+
+    def test_fallback_visual_de_multi_select_combo_intacto(self, qapp):
+        """El contrato de MultiSelectCombo.set_selected_ids no cambia (14.4)."""
+        combo = MultiSelectCombo()
+        combo.set_fixed_options([(MultiSelectCombo.ALL, "Todos")])
+        combo.set_items([(1, "Ana")])
+        combo.set_selected_ids([999])
+        assert combo._button.text() == "999"
+        assert combo._button.toolTip() == ""
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Checklist mode — regresión en _is_edit
 # ──────────────────────────────────────────────────────────────────────

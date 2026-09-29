@@ -4,6 +4,7 @@ Permite acotar el informe por usuarios implicados (con rol), por rango
 de fechas de creación y por proyectos, antes de generar el fichero.
 """
 from datetime import date
+import logging
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QGroupBox, QHBoxLayout, QCheckBox,
@@ -270,7 +271,10 @@ class ReportDialog(QDialog):
             return
         try:
             fields = self._custom_fields_provider(self.selected_project_ids)
-        except Exception:
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "No se pudieron cargar los campos personalizados del informe: %s", e
+            )
             fields = []
         self._custom_fields = fields
         self._populate_custom_fields(fields)

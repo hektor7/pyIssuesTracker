@@ -1,4 +1,5 @@
 import httpx
+import logging
 import mimetypes
 import os
 import subprocess
@@ -17,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app import __version__
+from app.services.logging_config import setup_logging, get_qt_handler
 from app.services.settings_manager import SettingsManager
 from app.services.redmine_client import (
     RedmineClient, RedmineError, RedmineAuthError, RedmineConnectionError,
@@ -33,11 +35,14 @@ from app.dialogs.reject_dialog import RejectDialog
 from app.dialogs.assign_dialog import AssignDialog
 from app.dialogs.complete_dialog import CompleteDialog
 from app.dialogs.report_dialog import ReportDialog
+from app.dialogs.debug_log_dialog import DebugLogDialog
 from app.services.report_generator import ReportGenerator, REPORT_FIELDS
 from app.tray_icon import TrayManager
 from app.utils.constants import APP_DISPLAY_NAME
 from app.utils.projects import descendant_project_ids
 from app.widgets.searchable_combo import make_searchable_combo, update_completer_model
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectSelectDialog(QDialog):
@@ -74,6 +79,7 @@ class ProjectSelectDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        setup_logging()
         self._settings = SettingsManager()
         self._redmine: RedmineClient | None = None
         self._tray: TrayManager | None = None
@@ -85,6 +91,8 @@ class MainWindow(QMainWindow):
         self._trackers: list[tuple[int, str]] = []
         self._current_user_id: int = 0
         self._search_text: str = ""
+        self._huerfanos_avisados: set[int] = set()
+        self._debug_log_dialog: DebugLogDialog | None = None
 
         self._known_issue_ids: dict[int, set[int]] = {}
         self._poll_timer = QTimer(self)
@@ -190,6 +198,13 @@ class MainWindow(QMainWindow):
         action_salir.setShortcut("Ctrl+Q")
         action_salir.triggered.connect(self._salir)
         archivo_menu.addAction(action_salir)
+
+        ver_menu = mb.addMenu("&Ver")
+        ver_menu.setObjectName("menu_ver")
+
+        action_log = QAction("&Registro de diagnóstico", self)
+        action_log.triggered.connect(self._abrir_registro_diagnostico)
+        ver_menu.addAction(action_log)
 
         self._apply_menu_style()
 
@@ -362,8 +377,8 @@ class MainWindow(QMainWindow):
                 self._settings.filter_date_from or None,
                 self._settings.filter_date_to or None,
             )
-        except RedmineError:
-            pass
+        except RedmineError as e:
+            logger.error("Error al cargar los proyectos: %s", e)
 
     def _cargar_estados(self):
         if not self._redmine:
@@ -371,7 +386,8 @@ class MainWindow(QMainWindow):
         try:
             statuses = self._redmine.get_issue_statuses()
             self._statuses = [(s.id, s.name) for s in statuses]
-        except RedmineError:
+        except RedmineError as e:
+            logger.warning("Error al cargar los estados: %s", e)
             self._statuses = []
         self._update_task_table_context()
 
@@ -382,7 +398,8 @@ class MainWindow(QMainWindow):
             priorities = self._redmine.get_issue_priorities()
             self._priorities = [(p.id, p.name) for p in priorities]
             self._filter_bar.populate_priorities(self._priorities)
-        except RedmineError:
+        except RedmineError as e:
+            logger.warning("Error al cargar las prioridades: %s", e)
             self._priorities = []
         self._task_table.set_priorities(self._priorities)
 
@@ -392,7 +409,8 @@ class MainWindow(QMainWindow):
         try:
             trackers = self._redmine.get_trackers()
             self._trackers = [(t.id, t.name) for t in trackers]
-        except RedmineError:
+        except RedmineError as e:
+            logger.warning("Error al cargar los trackers: %s", e)
             self._trackers = []
 
     def _cargar_categorias_proyecto(self, project_ids):
@@ -406,7 +424,8 @@ class MainWindow(QMainWindow):
             try:
                 cats = self._redmine.get_project_issue_categories(pid)
                 categories.extend([(c.id, c.name) for c in cats])
-            except RedmineError:
+            except RedmineError as e:
+                logger.warning("Error al cargar categorías del proyecto %s: %s", pid, e)
                 continue
         # Dedupe por id de categoría
         seen = set()
@@ -428,7 +447,8 @@ class MainWindow(QMainWindow):
             try:
                 mbs = self._redmine.get_project_memberships(pid)
                 members.extend([(m.user_id, m.user_name) for m in mbs if m.user_id])
-            except RedmineError:
+            except RedmineError as e:
+                logger.warning("Error al cargar miembros del proyecto %s: %s", pid, e)
                 continue
         # Dedupe por id de usuario
         seen = set()
@@ -443,6 +463,19 @@ class MainWindow(QMainWindow):
         if not self._redmine:
             return
         project_ids = self._filter_bar.selected_project_ids
+        # (a) Saneado de IDs de proyecto huérfanos contra los proyectos cargados:
+        # un ID persistido/obsoleto no debe llegar a la API (provocaría 404 y
+        # abortaría el merge multi-proyecto).
+        if project_ids and self._project_full_names:
+            valid_ids = set(self._project_full_names)
+            orphaned = [pid for pid in project_ids if pid not in valid_ids]
+            if orphaned:
+                logger.warning(
+                    "IDs de proyecto huérfanos descartados en _cargar_issues: %s",
+                    orphaned,
+                )
+                self._avisar_proyectos_huerfanos(orphaned)
+                project_ids = [pid for pid in project_ids if pid in valid_ids]
         status_filter = self._filter_bar.selected_status
         priority_id = self._filter_bar.selected_priority or None
         category_id = self._filter_bar.selected_category or None
@@ -463,6 +496,7 @@ class MainWindow(QMainWindow):
             if not assigned_to_ids:
                 assigned_to_ids = None
 
+        failed_projects: list[int] = []
         try:
             issues = self._redmine.get_issues(
                 project_id=project_ids or None,
@@ -473,6 +507,7 @@ class MainWindow(QMainWindow):
                 due_date_from=due_date_from,
                 due_date_to=due_date_to,
                 current_user_id=self._current_user_id,
+                failed_projects=failed_projects,
             )
             issues_dict = [
                 {
@@ -505,7 +540,11 @@ class MainWindow(QMainWindow):
                 issues_dict = [i for i in issues_dict if search_lower in i.get("subject", "").lower()]
             self._task_table.set_issues(issues_dict)
             self._update_task_table_context()
-            self._status_indicator.set_connected(True)
+            # (d) Distinguir "sin resultados" de "error de carga"
+            if issues_dict:
+                self._status_indicator.set_connected(True)
+            else:
+                self._status_indicator.set_connected(True, "Sin resultados")
             if track_known:
                 if project_ids:
                     for pid in project_ids:
@@ -514,8 +553,42 @@ class MainWindow(QMainWindow):
                         }
                 else:
                     self._known_issue_ids[None] = {iss["id"] for iss in issues_dict}
+            # (e) Avisar de los proyectos que fallaron, conservando los válidos
+            if failed_projects:
+                self._avisar_proyectos_fallidos(failed_projects)
         except RedmineError as e:
-            self._status_indicator.set_connected(False, str(e))
+            logger.error(
+                "Error al cargar issues (proyectos=%s): %s",
+                project_ids or "todos", e,
+            )
+            self._status_indicator.set_connected(False, "Error de carga")
+            QMessageBox.warning(
+                self, "Error de carga",
+                f"No se pudieron cargar las tareas:\n{str(e)}",
+            )
+
+    def _avisar_proyectos_huerfanos(self, orphaned: list[int]):
+        """Avisa al usuario (una sola vez por ID) de los proyectos descartados."""
+        nuevos = [pid for pid in orphaned if pid not in self._huerfanos_avisados]
+        if not nuevos:
+            return
+        self._huerfanos_avisados.update(nuevos)
+        nombres = [self._project_full_names.get(pid, str(pid)) for pid in nuevos]
+        QMessageBox.warning(
+            self, "Proyectos no disponibles",
+            "Algunos proyectos seleccionados ya no están disponibles y se han "
+            "quitado del filtro:\n" + "\n".join(f"  • {n}" for n in nombres),
+        )
+
+    def _avisar_proyectos_fallidos(self, failed_projects: list[int]):
+        """Avisa de qué proyectos fallaron al cargar, conservando el resto."""
+        nombres = [self._project_full_names.get(pid, str(pid)) for pid in failed_projects]
+        QMessageBox.warning(
+            self, "Carga parcial",
+            "No se pudieron cargar las tareas de algunos proyectos:\n"
+            + "\n".join(f"  • {n}" for n in nombres)
+            + "\n\nSe muestran los resultados de los proyectos que sí respondieron.",
+        )
 
     # ================================================================
     # Informe ODS
@@ -539,7 +612,8 @@ class MainWindow(QMainWindow):
             try:
                 mbs = self._redmine.get_project_memberships(pid)
                 members.extend([(m.user_id, m.user_name) for m in mbs if m.user_id])
-            except RedmineError:
+            except RedmineError as e:
+                logger.warning("Error al cargar miembros para el informe (proyecto %s): %s", pid, e)
                 continue
         seen: set[int] = set()
         unique: list[tuple[int, str]] = []
@@ -581,7 +655,10 @@ class MainWindow(QMainWindow):
             try:
                 cfs = self._redmine.get_project_custom_fields(pid)
                 fields.extend((cf.id, cf.name) for cf in cfs)
-            except RedmineError:
+            except RedmineError as e:
+                logger.warning(
+                    "Error al cargar campos personalizados del proyecto %s: %s", pid, e
+                )
                 continue
         seen: set[int] = set()
         unique: list[tuple[int, str]] = []
@@ -640,6 +717,7 @@ class MainWindow(QMainWindow):
                 current_user_id=self._current_user_id,
             )
         except RedmineError as e:
+            logger.error("Error de API al obtener tareas para el informe: %s", e)
             QMessageBox.critical(self, "Error",
                                  f"No se pudieron obtener las tareas:\n{str(e)}")
             return
@@ -683,6 +761,7 @@ class MainWindow(QMainWindow):
             finally:
                 QApplication.restoreOverrideCursor()
         except Exception as e:
+            logger.exception("Error inesperado al generar el informe: %s", e)
             QMessageBox.critical(self, "Error",
                                  f"No se pudo generar el informe:\n{str(e)}")
             return
@@ -861,13 +940,19 @@ class MainWindow(QMainWindow):
             try:
                 cats = self._redmine.get_project_issue_categories(default_project_id)
                 initial_categories = [(c.id, c.name) for c in cats]
-            except RedmineError:
-                pass
+            except RedmineError as e:
+                logger.warning(
+                    "Error al cargar categorías iniciales del proyecto %s: %s",
+                    default_project_id, e,
+                )
             try:
                 mbs = self._redmine.get_project_memberships(default_project_id)
                 members = [(m.user_id, m.user_name) for m in mbs if m.user_id]
-            except RedmineError:
-                pass
+            except RedmineError as e:
+                logger.warning(
+                    "Error al cargar miembros iniciales del proyecto %s: %s",
+                    default_project_id, e,
+                )
 
         dlg = TaskDialog(
             self,
@@ -904,7 +989,11 @@ class MainWindow(QMainWindow):
                     for subject in dlg.pending_checklist_items:
                         try:
                             self._redmine.create_checklist_item(new_issue_id, subject)
-                        except Exception:
+                        except Exception as e:
+                            logger.warning(
+                                "No se pudo crear el item de checklist '%s' de la tarea %s: %s",
+                                subject, new_issue_id, e,
+                            )
                             failed_items.append(subject)
                     if failed_items:
                         QMessageBox.warning(
@@ -915,14 +1004,53 @@ class MainWindow(QMainWindow):
                         )
                 self._cargar_issues()
             except RedmineValidationError as e:
+                logger.error(
+                    "Validación rechazada al crear tarea (proyecto=%s, tracker=%s): %s",
+                    dlg.project_id, dlg.tracker_id, e.errors,
+                )
                 errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
-                QMessageBox.critical(self, "Error de validación",
-                                     f"Redmine rechazó la tarea:\n{errors_text}")
+                if self._es_error_proyecto_sin_trackers(e):
+                    # 422 con Proyecto/Tipo/Estado en blanco: comprobar si el
+                    # proyecto realmente no tiene trackers (tipos) definidos.
+                    # None = consulta fallida (fail-open: no bloquear).
+                    trackers: list | None = None
+                    try:
+                        trackers = self._redmine.get_project_trackers(dlg.project_id) or []
+                    except RedmineError as exc:
+                        logger.error(
+                            "No se pudieron consultar los trackers del proyecto %s: %s",
+                            dlg.project_id, exc,
+                        )
+                    if trackers is not None and isinstance(trackers, list) and not trackers:
+                        # Proyecto confirmadamente sin trackers → mensaje accionable
+                        nombre = self._project_full_names.get(dlg.project_id, str(dlg.project_id))
+                        logger.warning(
+                            "Alta de tarea rechazada: el proyecto %s no tiene trackers",
+                            dlg.project_id,
+                        )
+                        QMessageBox.critical(
+                            self, "Error de validación",
+                            f"El proyecto '{nombre}' no tiene tipos (trackers) definidos. "
+                            f"Configúralos en Redmine o elige otro proyecto.",
+                        )
+                    else:
+                        # Tiene trackers o la consulta falló → detalle + contexto
+                        QMessageBox.critical(
+                            self, "Error de validación",
+                            f"Redmine rechazó la tarea:\n{errors_text}\n\n"
+                            f"Proyecto enviado: {dlg.project_id} · Tracker enviado: {dlg.tracker_id}",
+                        )
+                else:
+                    QMessageBox.critical(self, "Error de validación",
+                                         f"Redmine rechazó la tarea:\n{errors_text}")
             except RedmineConnectionError as e:
+                logger.error("Error de red al crear tarea: %s", e)
                 QMessageBox.critical(self, "Error de conexión", str(e))
             except RedmineError as e:
+                logger.error("Error de API al crear tarea: %s", e)
                 QMessageBox.critical(self, "Error", f"No se pudo crear la tarea:\n{str(e)}")
             except Exception as e:
+                logger.exception("Error inesperado al crear tarea: %s", e)
                 QMessageBox.critical(self, "Error inesperado",
                                      f"Ocurrió un error inesperado al crear la tarea:\n{str(e)}")
 
@@ -965,13 +1093,19 @@ class MainWindow(QMainWindow):
                 try:
                     cats = self._redmine.get_project_issue_categories(project_id)
                     initial_categories = [(c.id, c.name) for c in cats]
-                except RedmineError:
-                    pass
+                except RedmineError as e:
+                    logger.warning(
+                        "Error al cargar categorías del proyecto %s (edición): %s",
+                        project_id, e,
+                    )
                 try:
                     mbs = self._redmine.get_project_memberships(project_id)
                     members = [(m.user_id, m.user_name) for m in mbs if m.user_id]
-                except RedmineError:
-                    pass
+                except RedmineError as e:
+                    logger.warning(
+                        "Error al cargar miembros del proyecto %s (edición): %s",
+                        project_id, e,
+                    )
 
             dlg = TaskDialog(
                 self,
@@ -1006,14 +1140,22 @@ class MainWindow(QMainWindow):
                     self._redmine.add_issue_note(issue_id, dlg.pending_comment)
                 self._cargar_issues()
         except RedmineValidationError as e:
+            logger.error(
+                "Validación rechazada al editar tarea %s (proyecto=%s, tracker=%s): %s",
+                issue_id, task_data.get("project_id", 0), task_data.get("tracker_id", 0),
+                e.errors,
+            )
             errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
             QMessageBox.critical(self, "Error de validación",
                                  f"Redmine rechazó la actualización:\n{errors_text}")
         except RedmineConnectionError as e:
+            logger.error("Error de red al editar tarea %s: %s", issue_id, e)
             QMessageBox.critical(self, "Error de conexión", str(e))
         except RedmineError as e:
+            logger.error("Error de API al editar tarea %s: %s", issue_id, e)
             QMessageBox.critical(self, "Error", f"No se pudo editar la tarea:\n{str(e)}")
         except Exception as e:
+            logger.exception("Error inesperado al editar tarea %s: %s", issue_id, e)
             QMessageBox.critical(self, "Error inesperado",
                                  f"Ocurrió un error inesperado al editar la tarea:\n{str(e)}")
 
@@ -1052,6 +1194,7 @@ class MainWindow(QMainWindow):
         try:
             data = self._redmine.get_issue_with_journals(issue_id)
         except RedmineError as e:
+            logger.error("Error de API al obtener la tarea origen %s para copiar: %s", issue_id, e)
             QMessageBox.critical(self, "Error",
                                  f"No se pudo obtener la tarea origen:\n{str(e)}")
             return
@@ -1066,13 +1209,19 @@ class MainWindow(QMainWindow):
         try:
             cats = self._redmine.get_project_issue_categories(dest_project_id)
             initial_categories = [(c.id, c.name) for c in cats]
-        except RedmineError:
-            pass
+        except RedmineError as e:
+            logger.warning(
+                "Error al cargar categorías del destino %s (copia): %s",
+                dest_project_id, e,
+            )
         try:
             mbs = self._redmine.get_project_memberships(dest_project_id)
             members = [(m.user_id, m.user_name) for m in mbs if m.user_id]
-        except RedmineError:
-            pass
+        except RedmineError as e:
+            logger.warning(
+                "Error al cargar miembros del destino %s (copia): %s",
+                dest_project_id, e,
+            )
         # Los campos personalizados del destino los carga TaskDialog al seleccionar
         # el proyecto (default_project_id dispara _on_project_changed).
 
@@ -1129,6 +1278,9 @@ class MainWindow(QMainWindow):
                             "content_type": content_type or "application/octet-stream",
                         })
             except Exception as e:
+                logger.exception(
+                    "Error inesperado al copiar adjuntos de la tarea %s: %s", issue_id, e
+                )
                 QMessageBox.critical(
                     self, "Error al copiar adjuntos",
                     f"No se pudieron copiar los adjuntos:\n{str(e)}"
@@ -1158,7 +1310,11 @@ class MainWindow(QMainWindow):
                 for subject in copy_dlg.pending_checklist_items:
                     try:
                         self._redmine.create_checklist_item(new_issue_id, subject)
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(
+                            "No se pudo crear el item de checklist '%s' de la copia %s: %s",
+                            subject, new_issue_id, e,
+                        )
                         failed_items.append(subject)
                 if failed_items:
                     QMessageBox.warning(
@@ -1169,14 +1325,21 @@ class MainWindow(QMainWindow):
                     )
             self._cargar_issues()
         except RedmineValidationError as e:
+            logger.error(
+                "Validación rechazada al copiar tarea %s (proyecto=%s, tracker=%s): %s",
+                issue_id, copy_dlg.project_id, copy_dlg.tracker_id, e.errors,
+            )
             errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
             QMessageBox.critical(self, "Error de validación",
                                  f"Redmine rechazó la tarea:\n{errors_text}")
         except RedmineConnectionError as e:
+            logger.error("Error de red al copiar tarea %s: %s", issue_id, e)
             QMessageBox.critical(self, "Error de conexión", str(e))
         except RedmineError as e:
+            logger.error("Error de API al copiar tarea %s: %s", issue_id, e)
             QMessageBox.critical(self, "Error", f"No se pudo crear la tarea:\n{str(e)}")
         except Exception as e:
+            logger.exception("Error inesperado al copiar tarea %s: %s", issue_id, e)
             QMessageBox.critical(self, "Error inesperado",
                                  f"Ocurrió un error inesperado al crear la tarea:\n{str(e)}")
 
@@ -1194,8 +1357,11 @@ class MainWindow(QMainWindow):
             if project_id:
                 mbs = self._redmine.get_project_memberships(project_id)
                 members = [(m.user_id, m.user_name) for m in mbs]
-        except RedmineError:
-            pass
+        except RedmineError as e:
+            logger.warning(
+                "Error al cargar miembros del proyecto %s (asignar): %s",
+                project_id, e,
+            )
 
         dlg = AssignDialog(issue_id, members, self._current_user_id, self)
         if dlg.exec() == AssignDialog.DialogCode.Accepted:
@@ -1204,6 +1370,7 @@ class MainWindow(QMainWindow):
                 self._registrar_asignacion(dlg.selected_user_id)
                 self._cargar_issues()
             except RedmineError as e:
+                logger.error("Error de API al asignar la tarea %s: %s", issue_id, e)
                 QMessageBox.critical(self, "Error", f"No se pudo asignar:\n{str(e)}")
 
     def _completar_tarea(self):
@@ -1247,6 +1414,9 @@ class MainWindow(QMainWindow):
             self._cargar_issues()
             self._tray.notify(APP_DISPLAY_NAME, f"Tarea #{issue_id} completada")
         except RedmineValidationError as e:
+            logger.error(
+                "Validación rechazada al completar la tarea %s: %s", issue_id, e.errors,
+            )
             errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
             QMessageBox.warning(self, "Error al completar",
                                 f"Redmine rechazó la operación. Causas posibles:\n"
@@ -1255,6 +1425,7 @@ class MainWindow(QMainWindow):
                                 f"  • La fecha de fin no es válida\n\n"
                                 f"Detalle del servidor:\n{errors_text}")
         except RedmineError as e:
+            logger.error("Error de API al completar la tarea %s: %s", issue_id, e)
             QMessageBox.critical(self, "Error", f"No se pudo completar:\n{str(e)}")
 
     def _rechazar_tarea(self):
@@ -1272,6 +1443,7 @@ class MainWindow(QMainWindow):
                 self._cargar_issues()
                 self._tray.notify(APP_DISPLAY_NAME, f"Tarea #{issue_id} rechazada")
             except RedmineError as e:
+                logger.error("Error de API al rechazar la tarea %s: %s", issue_id, e)
                 QMessageBox.critical(self, "Error", f"No se pudo rechazar:\n{str(e)}")
 
     def _abrir_url_redmine(self, issue_id: int, url: str):
@@ -1319,6 +1491,7 @@ class MainWindow(QMainWindow):
             self._redmine.update_issue(issue_id, due_date=due_date if due_date else "")
             self._task_table.refresh_due_date_cell(issue_id, due_date)
         except RedmineError as e:
+            logger.error("Error de API al actualizar la fecha de fin de la tarea %s: %s", issue_id, e)
             QMessageBox.warning(self, "Error", f"No se pudo actualizar la fecha de fin:\n{str(e)}")
 
     def _on_columnas_cambiadas(self):
@@ -1407,7 +1580,10 @@ class MainWindow(QMainWindow):
                 if new_ids:
                     all_new_issues.extend(iss for iss in issues if iss.id in new_ids)
                 self._known_issue_ids[pid] = current_ids
-            except RedmineError:
+            except RedmineError as e:
+                logger.warning(
+                    "Error al comprobar issues nuevos del proyecto %s: %s", pid, e
+                )
                 continue
 
         if all_new_issues and self._settings.notifications_enabled:
@@ -1439,8 +1615,11 @@ class MainWindow(QMainWindow):
                 mbs = self._redmine.get_project_memberships(project_id)
                 for m in mbs:
                     member_names[m.user_id] = m.user_name
-            except RedmineError:
-                pass
+            except RedmineError as e:
+                logger.warning(
+                    "Error al cargar miembros del proyecto %s (contexto tabla): %s",
+                    project_id, e,
+                )
         self._task_table.set_context_data(
             self._statuses,
             self._current_user_id,
@@ -1468,11 +1647,16 @@ class MainWindow(QMainWindow):
                 self._redmine.update_issue(issue_id, done_ratio=valor)
                 self._cargar_issues()
             except RedmineValidationError as e:
+                logger.error(
+                    "Validación rechazada al cambiar progreso de la tarea %s a %s: %s",
+                    issue_id, valor, e.errors,
+                )
                 errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
                 QMessageBox.warning(self, "Cambio no permitido",
                                     f"Redmine rechazó el cambio de progreso.\n\n"
                                     f"Detalle:\n{errors_text}")
             except RedmineError as e:
+                logger.error("Error de API al cambiar progreso de la tarea %s: %s", issue_id, e)
                 QMessageBox.critical(self, "Error", f"No se pudo actualizar el progreso:\n{str(e)}")
 
         elif tipo == "asignado":
@@ -1488,6 +1672,7 @@ class MainWindow(QMainWindow):
                 self._registrar_asignacion(valor)
                 self._cargar_issues()
             except RedmineError as e:
+                logger.error("Error de API al asignar la tarea %s a %s: %s", issue_id, valor, e)
                 QMessageBox.critical(self, "Error", f"No se pudo asignar:\n{str(e)}")
 
         elif tipo == "estado":
@@ -1503,21 +1688,49 @@ class MainWindow(QMainWindow):
                 self._redmine.update_issue(issue_id, status_id=valor)
                 self._cargar_issues()
             except RedmineValidationError as e:
+                logger.error(
+                    "Validación rechazada al cambiar estado de la tarea %s a %s: %s",
+                    issue_id, valor, e.errors,
+                )
                 errors_text = "\n".join(f"  • {err}" for err in e.errors) if e.errors else str(e)
                 QMessageBox.warning(self, "Cambio no permitido",
                                     f"Redmine rechazó el cambio de estado. Esto suele ocurrir porque "
                                     f"el estado seleccionado no está permitido en el workflow de esta tarea.\n\n"
                                     f"Detalle:\n{errors_text}")
             except RedmineError as e:
+                logger.error("Error de API al cambiar estado de la tarea %s: %s", issue_id, e)
                 QMessageBox.critical(self, "Error", f"No se pudo cambiar el estado:\n{str(e)}")
 
     # ================================================================
     # Configuración
     # ================================================================
 
+    @staticmethod
+    def _es_error_proyecto_sin_trackers(e: RedmineValidationError) -> bool:
+        """True si los errores indican campos en blanco de Proyecto/Tipo/Estado.
+
+        Es el patrón típico cuando el proyecto no tiene trackers (tipos)
+        definidos: Redmine responde 422 con los tres campos "en blanco".
+        """
+        texto = " ".join(e.errors).lower()
+        return (
+            "proyecto" in texto
+            and "tipo" in texto
+            and "estado" in texto
+            and ("en blanco" in texto or "blank" in texto)
+        )
+
     def _abrir_configuracion(self):
         dlg = SettingsDialog(self._settings, self, projects=self._projects)
         dlg.exec()
+
+    def _abrir_registro_diagnostico(self):
+        """Abre la ventana de depuración (no modal, se conserva la referencia)."""
+        if self._debug_log_dialog is None:
+            self._debug_log_dialog = DebugLogDialog(self)
+        self._debug_log_dialog.show()
+        self._debug_log_dialog.raise_()
+        self._debug_log_dialog.activateWindow()
 
     # ================================================================
     # Ventana

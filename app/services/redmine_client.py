@@ -7,6 +7,10 @@ import httpx
 from app.utils.constants import REDMINE_REQUEST_TIMEOUT, REDMINE_PAGE_LIMIT
 from app.utils.projects import build_project_full_names
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class RedmineProject:
@@ -291,7 +295,9 @@ class RedmineClient:
         """Intenta parsear JSON de una respuesta, devolviendo None si falla."""
         try:
             return resp.json()
-        except Exception:
+        except Exception as e:
+            logger.debug("No se pudo parsear el JSON de la respuesta (%s): %s",
+                         getattr(resp, "status_code", "?"), e)
             return None
 
     def _get(self, path: str, params: dict | None = None) -> dict:
@@ -345,7 +351,9 @@ class RedmineClient:
             raise RedmineConnectionError("Timeout al conectar al servidor Redmine")
         try:
             return resp.json() if resp is not None else {}
-        except Exception:
+        except Exception as e:
+            logger.warning("No se pudo parsear el JSON de la respuesta POST (%s): %s",
+                           getattr(resp, "status_code", "?"), e)
             return {}
 
     def _put(self, path: str, data: dict) -> dict:
@@ -375,7 +383,9 @@ class RedmineClient:
             raise RedmineConnectionError("Timeout al conectar al servidor Redmine")
         try:
             return resp.json() if resp is not None else {}
-        except Exception:
+        except Exception as e:
+            logger.warning("No se pudo parsear el JSON de la respuesta PUT (%s): %s",
+                           getattr(resp, "status_code", "?"), e)
             return {}
 
     def _delete(self, path: str) -> dict:
@@ -469,6 +479,20 @@ class RedmineClient:
             ))
         return trackers
 
+    def get_project_trackers(self, project_id: int) -> list[tuple[int, str]]:
+        """Obtiene los trackers (tipos) definidos en un proyecto concreto.
+
+        Realiza GET /projects/{id}.json?include=trackers y devuelve
+        [(id, nombre), ...]. Un proyecto sin trackers devuelve lista vacía.
+        Los errores de red/API se propagan (el fail-open lo aplica el caller).
+        """
+        raw = self._get(f"/projects/{project_id}.json", params={"include": "trackers"})
+        project = raw.get("project", {})
+        return [
+            (t["id"], t["name"])
+            for t in project.get("trackers", []) or []
+        ]
+
     # ---- Issues ----
 
     def get_issues(
@@ -486,6 +510,7 @@ class RedmineClient:
         current_user_id: int = 0,
         limit: int = REDMINE_PAGE_LIMIT,
         offset: int = 0,
+        failed_projects: list | None = None,
     ) -> list[RedmineIssue]:
         include = "attachments"
         if include_journals:
@@ -556,14 +581,25 @@ class RedmineClient:
         elif created_on_to:
             params["created_on"] = f"<={created_on_to}"
 
-        # Multi-proyecto: una petición por proyecto, fusionando sin duplicados
+        # Multi-proyecto: una petición por proyecto, fusionando sin duplicados.
+        # Cada proyecto se consulta de forma AISLADA: un fallo (404/403/timeout)
+        # en uno de ellos no aborta el merge; el pid fallido se acumula en
+        # failed_projects (si se pasó) y se registra en el log.
         issues: list[RedmineIssue] = []
         if multiple_projects:
             seen_ids: set[int] = set()
             for pid in multiple_projects:
                 project_params = dict(params)
                 project_params["project_id"] = pid
-                raw = self._get("/issues.json", params=project_params)
+                try:
+                    raw = self._get("/issues.json", params=project_params)
+                except RedmineError as e:
+                    logger.error(
+                        "Error al cargar issues del proyecto %s: %s", pid, e
+                    )
+                    if failed_projects is not None:
+                        failed_projects.append(pid)
+                    continue
                 for i in raw.get("issues", []):
                     if i["id"] in seen_ids:
                         continue
@@ -976,7 +1012,8 @@ class RedmineClient:
         try:
             self._delete(f"/attachments/{attachment_id}.json")
             return True
-        except RedmineError:
+        except RedmineError as e:
+            logger.warning("No se pudo eliminar el adjunto %s: %s", attachment_id, e)
             return False
 
     def download_attachment(self, content_url: str, dest_path: str):

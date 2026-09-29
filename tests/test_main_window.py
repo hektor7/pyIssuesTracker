@@ -301,6 +301,97 @@ class TestNuevaTareaValidationErrors:
             assert "Error de validación" in call_args[0][1]
             assert "Asunto no puede estar vacío" in call_args[0][2]
 
+    def _accepted_dialog(self, project_id=5):
+        mock_dlg = MagicMock()
+        mock_dlg.exec.return_value = QDialog.DialogCode.Accepted
+        mock_dlg.project_id = project_id
+        mock_dlg.subject = "Test"
+        mock_dlg.description = ""
+        mock_dlg.tracker_id = 1
+        mock_dlg.priority_id = 2
+        mock_dlg.category_id = 0
+        mock_dlg.assigned_to_id = 0
+        mock_dlg.start_date = ""
+        mock_dlg.due_date = ""
+        mock_dlg.due_enabled = False
+        mock_dlg.done_ratio = 0
+        mock_dlg.upload_tokens = []
+        mock_dlg.pending_checklist_items = []
+        return mock_dlg
+
+    def test_nueva_tarea_mensaje_accionable_sin_trackers(self, main_window):
+        """1.10: 422 con Proyecto/Tipo/Estado en blanco y proyecto sin trackers
+        → mensaje accionable en lugar del texto crudo."""
+        mock_dlg = self._accepted_dialog(project_id=5)
+        main_window._redmine.create_issue.side_effect = RedmineValidationError(
+            "Error", [
+                "Proyecto no puede estar en blanco",
+                "Tipo no puede estar en blanco",
+                "Estado no puede estar en blanco",
+            ]
+        )
+        main_window._redmine.get_project_trackers.return_value = []
+
+        with (
+            patch("app.main_window.TaskDialog", return_value=mock_dlg) as mock_td,
+            patch("app.main_window.QMessageBox") as mock_msgbox,
+        ):
+            mock_td.DialogCode = QDialog.DialogCode
+            main_window._nueva_tarea()
+            mock_msgbox.critical.assert_called_once()
+            call_args = mock_msgbox.critical.call_args
+            assert "Error de validación" in call_args[0][1]
+            assert "no tiene tipos (trackers)" in call_args[0][2]
+            assert "Configúralos en Redmine" in call_args[0][2]
+
+    def test_nueva_tarea_con_trackers_muestra_detalle_con_contexto(self, main_window):
+        """1.10: 422 con campos en blanco pero el proyecto SÍ tiene trackers
+        → detalle previo + contexto de proyecto y tracker enviados."""
+        mock_dlg = self._accepted_dialog(project_id=5)
+        main_window._redmine.create_issue.side_effect = RedmineValidationError(
+            "Error", [
+                "Proyecto no puede estar en blanco",
+                "Tipo no puede estar en blanco",
+                "Estado no puede estar en blanco",
+            ]
+        )
+        main_window._redmine.get_project_trackers.return_value = [(1, "Bug")]
+
+        with (
+            patch("app.main_window.TaskDialog", return_value=mock_dlg) as mock_td,
+            patch("app.main_window.QMessageBox") as mock_msgbox,
+        ):
+            mock_td.DialogCode = QDialog.DialogCode
+            main_window._nueva_tarea()
+            mock_msgbox.critical.assert_called_once()
+            call_args = mock_msgbox.critical.call_args
+            assert "Error de validación" in call_args[0][1]
+            assert "Proyecto no puede estar en blanco" in call_args[0][2]
+            assert "Proyecto enviado" in call_args[0][2]
+            assert "Tracker enviado" in call_args[0][2]
+
+    def test_nueva_tarea_consulta_fallida_muestra_detalle(self, main_window):
+        """1.10: si get_project_trackers falla, se muestra el detalle previo (fail-open)."""
+        mock_dlg = self._accepted_dialog(project_id=5)
+        main_window._redmine.create_issue.side_effect = RedmineValidationError(
+            "Error", [
+                "Proyecto no puede estar en blanco",
+                "Tipo no puede estar en blanco",
+                "Estado no puede estar en blanco",
+            ]
+        )
+        main_window._redmine.get_project_trackers.side_effect = RedmineError("404")
+
+        with (
+            patch("app.main_window.TaskDialog", return_value=mock_dlg) as mock_td,
+            patch("app.main_window.QMessageBox") as mock_msgbox,
+        ):
+            mock_td.DialogCode = QDialog.DialogCode
+            main_window._nueva_tarea()
+            mock_msgbox.critical.assert_called_once()
+            call_args = mock_msgbox.critical.call_args
+            assert "Proyecto no puede estar en blanco" in call_args[0][2]
+
 
 class TestEditarTareaValidationErrors:
     """Tests para manejo de RedmineValidationError en _editar_tarea()."""
@@ -1218,6 +1309,113 @@ class TestCargarIssuesNombresCompletos:
         issues_dict = w._task_table.set_issues.call_args.args[0]
         assert issues_dict[0]["project_name"] == "Hijo"
         assert issues_dict[0]["priority_id"] == 4
+
+
+class TestCargarIssuesSaneadoYErrores:
+    """1.7/1.8: saneado de IDs huérfanos y distinción vacío/error en _cargar_issues."""
+
+    def _setup(self, main_window):
+        w = main_window
+        w._status_indicator = MagicMock()
+        w._update_task_table_context = MagicMock()
+        w._project_full_names = {1: "A", 2: "B"}
+        w._filter_bar.selected_project_ids = []
+        w._filter_bar.selected_status = "open"
+        w._filter_bar.selected_priority = 0
+        w._filter_bar.selected_category = 0
+        w._filter_bar.selected_date_from = None
+        w._filter_bar.selected_date_to = None
+        w._filter_bar.selected_assigned_to = []
+        return w
+
+    def test_cargar_issues_sanea_huerfanos_y_avisa(self, main_window):
+        """1.7: IDs seleccionados no presentes en los proyectos cargados se descartan."""
+        w = self._setup(main_window)
+        w._filter_bar.selected_project_ids = [999, 2]
+        w._redmine.get_issues.return_value = []
+
+        with patch("app.main_window.QMessageBox") as mock_msgbox:
+            MainWindow._cargar_issues(w)
+
+        call_kwargs = w._redmine.get_issues.call_args.kwargs
+        assert call_kwargs["project_id"] == [2]
+        mock_msgbox.warning.assert_called_once()
+
+    def test_cargar_issues_sin_resultados_muestra_sin_resultados(self, main_window):
+        """1.8: sin resultados, el indicador muestra 'Sin resultados' (no error)."""
+        w = self._setup(main_window)
+        w._redmine.get_issues.return_value = []
+
+        MainWindow._cargar_issues(w)
+
+        w._status_indicator.set_connected.assert_called_with(True, "Sin resultados")
+        w._task_table.set_issues.assert_called_once_with([])
+
+    def test_cargar_issues_error_muestra_aviso(self, main_window):
+        """1.8: ante RedmineError se muestra aviso y el indicador refleja error."""
+        w = self._setup(main_window)
+        w._redmine.get_issues.side_effect = RedmineError("boom")
+
+        with patch("app.main_window.QMessageBox") as mock_msgbox:
+            MainWindow._cargar_issues(w)
+
+        mock_msgbox.warning.assert_called_once()
+        w._status_indicator.set_connected.assert_called_with(False, "Error de carga")
+
+    def _issue_para_carga(self):
+        return SimpleNamespace(
+            id=42, subject="Tarea", description="", start_date="", due_date="",
+            status_name="Abierta", status_id=1, done_ratio=0,
+            project_id=1, project_name="A",
+            assigned_to_id=0, assigned_to_name="", author_name="",
+            tracker_name="", priority_name="", priority_id=0,
+            category_name="", created_on="", updated_on="",
+        )
+
+    def test_carga_parcial_con_proyecto_fallido_avisa_y_conserva_validos(self, main_window):
+        """W2: con 1 proyecto fallido se avisa 'Carga parcial' y se conservan los válidos."""
+        w = self._setup(main_window)
+        w._filter_bar.selected_project_ids = [1, 2]
+        issue = self._issue_para_carga()
+
+        def _side_effect(**kwargs):
+            kwargs["failed_projects"].append(2)
+            return [issue]
+
+        w._redmine.get_issues.side_effect = _side_effect
+
+        with patch("app.main_window.QMessageBox") as mock_msgbox:
+            MainWindow._cargar_issues(w)
+
+        # Se conservan los resultados válidos
+        w._task_table.set_issues.assert_called_once()
+        issues_dict = w._task_table.set_issues.call_args.args[0]
+        assert issues_dict[0]["id"] == 42
+        # Aviso de carga parcial
+        mock_msgbox.warning.assert_called_once()
+        call_args = mock_msgbox.warning.call_args
+        assert "Carga parcial" in call_args[0][1]
+
+    def test_todos_los_proyectos_fallan_avisa_y_no_deja_tabla_vacia_silenciosa(self, main_window):
+        """W4: con todos los proyectos fallidos se avisa y no hay tabla vacía silenciosa."""
+        w = self._setup(main_window)
+        w._filter_bar.selected_project_ids = [1, 2]
+
+        def _side_effect(**kwargs):
+            kwargs["failed_projects"].extend([1, 2])
+            return []
+
+        w._redmine.get_issues.side_effect = _side_effect
+
+        with patch("app.main_window.QMessageBox") as mock_msgbox:
+            MainWindow._cargar_issues(w)
+
+        # Se avisa de la carga parcial (todos fallaron)
+        mock_msgbox.warning.assert_called_once()
+        call_args = mock_msgbox.warning.call_args
+        assert "Carga parcial" in call_args[0][1]
+        # La tabla se actualiza y el indicador refleja el estado (no silencio)
+        w._task_table.set_issues.assert_called_once_with([])
 
 
 class TestCargarPriorities:

@@ -165,6 +165,30 @@ class TestGetIssuesMultiProject:
 
         assert sorted(iss.id for iss in result) == [2, 3]
 
+    def test_multiple_projects_isolates_failures(self, client):
+        """1.5: un proyecto que falla no aborta el merge y se reporta en failed_projects."""
+        p1 = [self._issue_json(1, 1, "2026-09-01T10:00:00Z")]
+        client._get = MagicMock(side_effect=[{"issues": p1}, RedmineError("404")])
+        failed: list = []
+        result = client.get_issues(project_id=[1, 2], failed_projects=failed)
+        assert [iss.id for iss in result] == [1]
+        assert failed == [2]
+
+    def test_multiple_projects_all_fail(self, client):
+        """1.5: si todos fallan, devuelve lista vacía y failed_projects con todos."""
+        client._get = MagicMock(side_effect=[RedmineError("403"), RedmineError("404")])
+        failed: list = []
+        result = client.get_issues(project_id=[1, 2], failed_projects=failed)
+        assert result == []
+        assert failed == [1, 2]
+
+    def test_multiple_projects_failed_projects_por_defecto_none(self, client):
+        """1.5: sin failed_projects, un fallo no aborta el merge (fail-open)."""
+        p1 = [self._issue_json(1, 1, "2026-09-01T10:00:00Z")]
+        client._get = MagicMock(side_effect=[{"issues": p1}, RedmineError("404")])
+        result = client.get_issues(project_id=[1, 2])
+        assert [iss.id for iss in result] == [1]
+
 
 class TestParseAttachments:
     """Tests para parseo de attachments desde respuestas JSON."""
@@ -1036,3 +1060,39 @@ class TestGetIssuesStatusFilter:
         client.get_issues(status_filter=None)
         _, kwargs = client._get.call_args
         assert "status_id" not in kwargs["params"]
+
+
+class TestGetProjectTrackers:
+    """1.9: get_project_trackers(project_id) devuelve los trackers del proyecto."""
+
+    @pytest.fixture
+    def client(self):
+        c = RedmineClient("https://redmine.example.com", "token")
+        c._get = MagicMock()
+        return c
+
+    def test_get_project_trackers(self, client):
+        """GET /projects/{id}.json?include=trackers → lista de (id, nombre)."""
+        client._get.return_value = {
+            "project": {
+                "id": 5,
+                "trackers": [
+                    {"id": 1, "name": "Bug"},
+                    {"id": 2, "name": "Feature"},
+                ],
+            }
+        }
+        result = client.get_project_trackers(5)
+        assert result == [(1, "Bug"), (2, "Feature")]
+        client._get.assert_called_once_with("/projects/5.json", params={"include": "trackers"})
+
+    def test_get_project_trackers_sin_trackers(self, client):
+        """Un proyecto sin trackers devuelve lista vacía."""
+        client._get.return_value = {"project": {"id": 5}}
+        assert client.get_project_trackers(5) == []
+
+    def test_get_project_trackers_propaga_error(self, client):
+        """Un error de red/API se propaga (el fail-open lo aplica el caller)."""
+        client._get.side_effect = RedmineError("404")
+        with pytest.raises(RedmineError):
+            client.get_project_trackers(999)

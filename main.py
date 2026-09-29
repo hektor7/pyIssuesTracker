@@ -9,7 +9,36 @@ from PyQt6.QtWidgets import QApplication
 
 from app import __version__, __app_name__
 from app.main_window import MainWindow
+from app.services.logging_config import setup_logging
 from app.services.settings_manager import SettingsManager
+
+
+def _install_excepthook():
+    """Instala un sys.excepthook que registra las excepciones no capturadas.
+
+    Las excepciones que escapan al bucle de Qt (callbacks, slots, hilos) se
+    registran a nivel CRITICAL con su traza en el log de diagnóstico. El hook
+    previo se conserva y se invoca después (comportamiento por defecto de
+    Python: imprimir la traza y terminar). El import del logging se hace de
+    forma segura: un fallo aquí nunca debe impedir delegar en el hook previo.
+    """
+    prev_hook = sys.excepthook
+
+    def _hook(exc_type, exc_value, exc_tb):
+        try:
+            from app.services.logging_config import setup_logging as _setup
+            logger = _setup()
+            logger.critical(
+                "Excepción no capturada: %s: %s",
+                exc_type.__name__,
+                exc_value,
+                exc_info=(exc_type, exc_value, exc_tb),
+            )
+        except Exception:
+            pass
+        prev_hook(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _hook
 
 
 def _check_system_dependencies():
@@ -105,6 +134,8 @@ def _apply_theme(app: QApplication, theme_key: str):
 
 def main():
     _check_system_dependencies()
+    setup_logging()
+    _install_excepthook()
     app = QApplication(sys.argv)
     app.setApplicationName(__app_name__)
     app.setApplicationVersion(__version__)

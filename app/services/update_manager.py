@@ -1,3 +1,4 @@
+import logging
 import sys
 from datetime import datetime
 from typing import Callable
@@ -7,6 +8,8 @@ from packaging.version import Version
 
 from app import __version__
 from app.utils.constants import GITHUB_API_RELEASES, REDMINE_REQUEST_TIMEOUT
+
+logger = logging.getLogger(__name__)
 
 
 class UpdateInfo:
@@ -35,7 +38,8 @@ class UpdateManager:
                 )
                 resp.raise_for_status()
                 releases = resp.json()
-            except Exception:
+            except Exception as e:
+                logger.warning("No se pudieron consultar las actualizaciones: %s", e)
                 return UpdateInfo(version="", url="", available=False)
 
         latest_stable: dict | None = None
@@ -54,7 +58,8 @@ class UpdateManager:
 
         try:
             remote_version = Version(tag)
-        except Exception:
+        except Exception as e:
+            logger.warning("Versión remota no válida '%s': %s", tag, e)
             return UpdateInfo(version="", url="", available=False)
 
         # Seleccionar asset según la plataforma
@@ -117,5 +122,6 @@ class UpdateManager:
                                 else:
                                     progress_callback(-1)
                 return True
-            except Exception:
+            except Exception as e:
+                logger.warning("Error al descargar la actualización desde %s: %s", url, e)
                 return False

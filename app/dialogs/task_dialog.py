@@ -1,4 +1,5 @@
 from datetime import date
+import logging
 from typing import Any
 
 from PyQt6.QtCore import Qt
@@ -16,6 +17,8 @@ from app.services.redmine_client import RedmineClient
 from app.widgets.comments_widget import CommentsWidget
 from app.widgets.checklist_widget import ChecklistWidget
 from app.widgets.searchable_combo import make_searchable_combo, update_completer_model
+
+logger = logging.getLogger(__name__)
 
 
 class TaskDialog(QDialog):
@@ -294,6 +297,17 @@ class TaskDialog(QDialog):
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
         main_layout.addWidget(buttons)
+        self._ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+
+        # --- Aviso de proyecto sin trackers (modo creación) ---
+        self._sin_trackers_label = QLabel(
+            "El proyecto seleccionado no tiene tipos (trackers) definidos. "
+            "Configúralos en Redmine o elige otro proyecto."
+        )
+        self._sin_trackers_label.setStyleSheet("color: #c62828; font-weight: bold;")
+        self._sin_trackers_label.setWordWrap(True)
+        self._sin_trackers_label.setVisible(False)
+        main_layout.addWidget(self._sin_trackers_label)
 
     def _make_searchable_combo(self) -> QComboBox:
         """Crea un combo buscable delegando en el helper compartido."""
@@ -402,14 +416,66 @@ class TaskDialog(QDialog):
             self._load_categories_for_project(project_id)
             self._load_members_for_project(project_id)
             self._load_custom_fields_for_project(project_id)
+            # En modo creación, el combo de tracker se puebla con los trackers
+            # DEL proyecto (no con el catálogo global). En edición se conserva
+            # el tracker del issue.
+            if not self._is_edit:
+                self._load_trackers_for_project(project_id)
+
+    def _load_trackers_for_project(self, project_id: int):
+        """Carga los trackers del proyecto en el combo de tracker (modo creación).
+
+        Fail-open: si la llamada falla o no devuelve una lista, NO se bloquea
+        el diálogo (compatibilidad con tests que usan mocks). Solo una lista
+        VACÍA confirmada deshabilita el OK y muestra el aviso.
+        """
+        if not self._redmine:
+            return
+        try:
+            trackers = self._redmine.get_project_trackers(project_id)
+        except Exception as e:
+            logger.warning(
+                "No se pudieron cargar los trackers del proyecto %s: %s",
+                project_id, e,
+            )
+            self._set_sin_trackers(False)
+            return
+        if isinstance(trackers, list) and trackers:
+            self._populate_trackers(trackers)
+            self._set_sin_trackers(False)
+        elif isinstance(trackers, list) and not trackers:
+            # Lista vacía confirmada: el proyecto no tiene trackers
+            logger.warning("El proyecto %s no tiene trackers definidos", project_id)
+            self._populate_trackers([])
+            self._set_sin_trackers(True)
+        else:
+            # No devuelve lista (mock/fallo): no bloquear
+            self._set_sin_trackers(False)
+
+    def _populate_trackers(self, trackers: list[tuple[int, str]]):
+        """Puebla el combo de tracker con los trackers del proyecto."""
+        self._tracker_combo.blockSignals(True)
+        self._tracker_combo.clear()
+        for tid, tname in trackers:
+            self._tracker_combo.addItem(tname, tid)
+        self._update_completer_model(self._tracker_combo)
+        self._tracker_combo.blockSignals(False)
+
+    def _set_sin_trackers(self, sin_trackers: bool):
+        """Muestra/oculta el aviso y habilita/deshabilita el botón OK."""
+        self._sin_trackers_label.setVisible(sin_trackers)
+        self._ok_button.setEnabled(not sin_trackers)
 
     def _load_categories_for_project(self, project_id: int):
         try:
             cats = self._redmine.get_project_issue_categories(project_id)
             categories = [(c.id, c.name) for c in cats]
             self._populate_categories(categories)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(
+                "No se pudieron cargar las categorías del proyecto %s: %s",
+                project_id, e,
+            )
 
     def _populate_categories(self, categories: list[tuple[int, str]]):
         """Puebla el combo de categorías con búsqueda."""
@@ -466,7 +532,11 @@ class TaskDialog(QDialog):
             mbs = self._redmine.get_project_memberships(project_id)
             members = [(m.user_id, m.user_name) for m in mbs if m.user_id]
             self._populate_members(members)
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "No se pudieron cargar los miembros del proyecto %s: %s",
+                project_id, e,
+            )
             self._populate_members([])
 
     # ================================================================
@@ -484,8 +554,12 @@ class TaskDialog(QDialog):
             return
         try:
             fields = self._redmine.get_project_custom_fields(project_id)
-        except Exception:
+        except Exception as e:
             # Si falla la carga, ocultar la sección sin romper el diálogo
+            logger.warning(
+                "No se pudieron cargar los campos personalizados del proyecto %s: %s",
+                project_id, e,
+            )
             self._custom_fields_group.setVisible(False)
             return
         if not fields:
@@ -745,8 +819,11 @@ class TaskDialog(QDialog):
             ]
             self._checklist_widget.set_items(items_data)
             self._checklist_group.setVisible(True)
-        except Exception:
+        except Exception as e:
             # Plugin no instalado o error: ocultar sección
+            logger.warning(
+                "No se pudieron cargar los checklists del issue %s: %s", issue_id, e
+            )
             self._checklist_group.setVisible(False)
 
     def _on_checklist_item_toggled(self, item_id: int, checked: bool):
@@ -757,8 +834,10 @@ class TaskDialog(QDialog):
         if self._redmine:
             try:
                 self._redmine.update_checklist_item(item_id, is_done=1 if checked else 0)
-            except Exception:
-                pass  # Silencioso, el usuario ya ve el toggle
+            except Exception as e:
+                logger.warning(
+                    "No se pudo actualizar el item de checklist %s: %s", item_id, e
+                )  # Silencioso, el usuario ya ve el toggle
 
     def _on_checklist_item_added(self, subject: str):
         if not self._is_edit:
@@ -781,8 +860,11 @@ class TaskDialog(QDialog):
                 else:
                     # Recargar todos los items
                     self._load_checklists()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(
+                    "No se pudo crear el item de checklist '%s' en el issue %s: %s",
+                    subject, issue_id, e,
+                )
 
     def _on_checklist_item_deleted(self, item_id: int):
         if not self._is_edit:
@@ -798,8 +880,10 @@ class TaskDialog(QDialog):
             try:
                 self._redmine.delete_checklist_item(item_id)
                 self._checklist_widget.remove_item_widget(item_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(
+                    "No se pudo eliminar el item de checklist %s: %s", item_id, e
+                )
 
     # ================================================================
     # Comentarios
