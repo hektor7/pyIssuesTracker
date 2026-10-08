@@ -792,6 +792,11 @@ class RedmineClient:
     def update_issue(self, issue_id: int, **fields) -> dict:
         uploads = fields.pop("uploads", None)
         custom_fields = fields.pop("custom_fields", None)
+        # Redmine rechaza category_id=0 ("Category is not included in the list").
+        # Un valor falsy (0 o None) se normaliza a "" (semántica nativa de Redmine
+        # para "sin categoría"); un id positivo se envía tal cual.
+        if "category_id" in fields and not fields["category_id"]:
+            fields["category_id"] = ""
         payload: dict[str, Any] = {"issue": fields}
         if uploads:
             payload["issue"]["uploads"] = uploads

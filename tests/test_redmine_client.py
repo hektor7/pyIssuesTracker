@@ -40,6 +40,56 @@ class TestUpdateIssue:
             "/issues/42.json", {"issue": {"uploads": uploads}}
         )
 
+    def test_update_issue_normalizes_zero_category_to_empty_string(self, client):
+        """Proyecto sin categorías: category_id=0 se normaliza a "" (nunca 0)."""
+        client.update_issue(issue_id=42, category_id=0)
+        client._put.assert_called_once_with(
+            "/issues/42.json", {"issue": {"category_id": ""}}
+        )
+
+    def test_update_issue_normalizes_none_category_to_empty_string(self, client):
+        """category_id=None se normaliza a "" (semántica nativa de Redmine)."""
+        client.update_issue(issue_id=42, category_id=None)
+        client._put.assert_called_once_with(
+            "/issues/42.json", {"issue": {"category_id": ""}}
+        )
+
+    def test_update_issue_sends_valid_category_id(self, client):
+        """Un id positivo de categoría se envía tal cual."""
+        client.update_issue(issue_id=42, category_id=7)
+        client._put.assert_called_once_with(
+            "/issues/42.json", {"issue": {"category_id": 7}}
+        )
+
+    def test_update_issue_without_category_key_omits_it(self, client):
+        """Sin el argumento category_id la clave NO se incluye en el payload."""
+        client.update_issue(issue_id=42, subject="x")
+        client._put.assert_called_once_with(
+            "/issues/42.json", {"issue": {"subject": "x"}}
+        )
+
+    def test_update_issue_clears_existing_category(self, client):
+        """Limpiar una categoría existente: category_id=0 envía "" y nunca 0."""
+        client.update_issue(issue_id=42, category_id=0)
+        _, payload = client._put.call_args.args
+        assert payload["issue"]["category_id"] == ""
+        assert payload["issue"]["category_id"] != 0
+
+
+class TestCreateIssue:
+    @pytest.fixture
+    def client(self):
+        c = RedmineClient("https://redmine.example.com", "token")
+        c._post = MagicMock(return_value={})
+        return c
+
+    def test_create_issue_with_zero_category_omits_key(self, client):
+        """No regresión: create_issue con category_id=0 NO incluye category_id."""
+        client.create_issue(project_id=1, subject="Nueva tarea", category_id=0)
+        client._post.assert_called_once()
+        _, payload = client._post.call_args.args
+        assert "category_id" not in payload["issue"]
+
 
 class TestAssignIssue:
     def test_assign_issue_without_notes(self, client):
