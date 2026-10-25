@@ -40,12 +40,18 @@ class ProgressBarDelegate(QStyledItemDelegate):
     El porcentaje es dato puro del modelo (entero en DisplayRole), de modo que
     la barra sigue siempre a su fila aunque la tabla se ordene o recargue.
     Respeta el fondo/foreground de prioridad establecidos en el item.
+
+    El color del texto del porcentaje se elige por contraste WCAG contra el
+    relleno real que tiene detrás (pista o tramo relleno), no por prioridad ni
+    por el tema, y se pinta en dos pasadas con recorte.
     """
 
     CHUNK_DONE = QColor("#2e7d32")      # 100 %
     CHUNK_PARTIAL = QColor("#f57c00")   # 1-99 %
     CHUNK_EMPTY = QColor("#bdbdbd")     # 0 %
     CHUNK_PRIORITY = QColor("#ff9800")  # fila de prioridad alta
+
+    TEXT_DARK = "#333333"
 
     @staticmethod
     def _progress_value(index) -> int:
@@ -55,6 +61,32 @@ class ProgressBarDelegate(QStyledItemDelegate):
         except (TypeError, ValueError):
             return 0
         return max(0, min(100, value))
+
+    @staticmethod
+    def _relative_luminance(color: QColor) -> float:
+        """Luminancia relativa WCAG de un color sRGB (0.0 negro, 1.0 blanco)."""
+        def _channel(value: int) -> float:
+            c = value / 255.0
+            if c <= 0.03928:
+                return c / 12.92
+            return ((c + 0.055) / 1.055) ** 2.4
+
+        return (
+            0.2126 * _channel(color.red())
+            + 0.7152 * _channel(color.green())
+            + 0.0722 * _channel(color.blue())
+        )
+
+    @classmethod
+    def _text_color_for(cls, background: QColor) -> QColor:
+        """Devuelve blanco o TEXT_DARK, el que más contraste con `background`."""
+        luminance = cls._relative_luminance(background)
+        dark_luminance = cls._relative_luminance(QColor(cls.TEXT_DARK))
+        contrast_white = 1.05 / (luminance + 0.05)
+        contrast_dark = (luminance + 0.05) / (dark_luminance + 0.05)
+        if contrast_white >= contrast_dark:
+            return QColor("#ffffff")
+        return QColor(cls.TEXT_DARK)
 
     @staticmethod
     def _priority_background(index) -> QColor | None:
@@ -84,6 +116,9 @@ class ProgressBarDelegate(QStyledItemDelegate):
             painter.fillRect(cell_rect, bg_brush)
 
         bar_rect = cell_rect.adjusted(4, 5, -4, -5)
+        track_color = self.CHUNK_EMPTY
+        chunk_color = None
+        chunk_rect = None
         if bar_rect.width() > 0 and bar_rect.height() > 0:
             if priority_bg is not None or value > 0:
                 track_color = QColor("#ffffff")
@@ -115,11 +150,29 @@ class ProgressBarDelegate(QStyledItemDelegate):
                     painter.drawRoundedRect(chunk_rect, 1, 1)
 
         text = f"{value}%"
-        if priority_bg is not None:
-            painter.setPen(QColor("white"))
+
+        def _draw_text(color: QColor):
+            painter.save()
+            painter.setPen(color)
+            painter.drawText(cell_rect, Qt.AlignmentFlag.AlignCenter, text)
+            painter.restore()
+
+        if bar_rect.width() > 0 and bar_rect.height() > 0:
+            # Pasada 1: parte del texto que cae sobre la pista
+            painter.save()
+            painter.setClipRect(bar_rect)
+            _draw_text(self._text_color_for(track_color))
+            painter.restore()
+
+            # Pasada 2: parte del texto que cae sobre el tramo relleno
+            if chunk_rect is not None:
+                painter.save()
+                painter.setClipRect(chunk_rect)
+                _draw_text(self._text_color_for(chunk_color))
+                painter.restore()
         else:
-            painter.setPen(option.palette.color(QPalette.ColorRole.Text))
-        painter.drawText(cell_rect, Qt.AlignmentFlag.AlignCenter, text)
+            # Celda degenerada: sin recorte para no perder el porcentaje
+            _draw_text(self._text_color_for(track_color))
         painter.restore()
 
 
@@ -283,8 +336,9 @@ class TaskTable(QTableWidget):
     }
     _PRIORITY_UNKNOWN_RANK = 5
 
-    _BG_INMEDIATA = QColor(200, 0, 0)
-    _BG_URGENTE = QColor(180, 20, 20)
+    _BG_INMEDIATA = QColor(139, 0, 0)
+    _BG_URGENTE = QColor(200, 0, 0)
+    _BG_ALTA = QColor(198, 81, 0)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -397,6 +451,8 @@ class TaskTable(QTableWidget):
             return self._BG_INMEDIATA
         if pname in ("urgente", "urgent"):
             return self._BG_URGENTE
+        if pname in ("alta", "high"):
+            return self._BG_ALTA
         return None
 
     def _apply_issue_style(self, item: QTableWidgetItem, issue: dict) -> QTableWidgetItem:

@@ -211,11 +211,11 @@ La barra de filtros permite acotar las tareas visibles mediante varios criterios
 | **Fecha inicio** | Fecha de comienzo de la tarea |
 | **Fecha fin** | Fecha limite. Se puede editar con doble clic |
 | **Estado** | Estado actual del flujo de trabajo |
-| **Progreso %** | Barra de progreso visual: verde (100%), naranja (parcial), gris (0%) |
+| **Progreso %** | Barra de progreso visual: verde (100%), naranja (parcial), gris (0%). En las filas con prioridad Alta, Urgente o Inmediata la barra usa el color de resaltado de la fila. El color del porcentaje se adapta al fondo de la barra para mantener el contraste |
 | **Asignado a** | Persona responsable de la tarea |
 | **Link** | Boton para abrir la tarea directamente en Redmine en el navegador |
 
-Las filas con prioridad **Inmediata** aparecen con fondo rojo intenso y las de prioridad **Urgente** con un rojo mas suave.
+Las filas se colorean segun su prioridad, con texto blanco en el resto de columnas: **Alta** en naranja rojizo, **Urgente** en rojo y **Inmediata** en rojo oscuro. El resto de prioridades mantiene el color del tema.
 
 ### 5.4 Indicador de estado
 
