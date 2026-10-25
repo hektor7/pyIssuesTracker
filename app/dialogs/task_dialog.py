@@ -10,12 +10,13 @@ from PyQt6.QtWidgets import (
     QDateEdit, QSlider, QHBoxLayout, QScrollArea,
     QWidget, QSizePolicy,
     QPushButton, QFileDialog, QFrame, QCheckBox,
-    QDoubleSpinBox, QListWidget, QAbstractItemView,
+    QDoubleSpinBox,
 )
 
 from app.services.redmine_client import RedmineClient
 from app.widgets.comments_widget import CommentsWidget
 from app.widgets.checklist_widget import ChecklistWidget
+from app.widgets.multi_value_combo import MultiValueCombo, TEXTO_SIN_OPCIONES
 from app.widgets.searchable_combo import make_searchable_combo, update_completer_model
 
 logger = logging.getLogger(__name__)
@@ -608,12 +609,9 @@ class TaskDialog(QDialog):
         fmt = field_def.field_format
         # Campo de valor múltiple: multiselección sobre possible_values
         if field_def.multiple:
-            list_widget = QListWidget()
-            list_widget.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-            for value in field_def.possible_values or []:
-                list_widget.addItem(str(value))
-            list_widget.setMaximumHeight(100)
-            return list_widget, "multiple", None
+            multi = MultiValueCombo()
+            multi.set_items([str(v) for v in field_def.possible_values or []])
+            return multi, "multiple", None
 
         if fmt == "string":
             return QLineEdit(), "string", None
@@ -646,9 +644,23 @@ class TaskDialog(QDialog):
             return QCheckBox(), "bool", None
         if fmt == "list":
             combo = QComboBox()
+            combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            combo.setMinimumContentsLength(20)
+            combo.setMinimumWidth(200)
+            combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
+            values = [str(v) for v in field_def.possible_values or []]
+            if not values:
+                combo.addItem(TEXTO_SIN_OPCIONES, "")
+                combo.setEnabled(False)
+                return combo, "list", None
             combo.addItem("", "")  # opción vacía para poder limpiar
-            for value in field_def.possible_values or []:
-                combo.addItem(str(value), str(value))
+            for text in values:
+                combo.addItem(text, text)
+                combo.setItemData(
+                    combo.count() - 1, text, Qt.ItemDataRole.ToolTipRole
+                )
             return combo, "list", None
         # Formato no contemplado: fallback a texto libre
         return QLineEdit(), "string", None
@@ -662,6 +674,15 @@ class TaskDialog(QDialog):
             entry["had_value"] = had_value
             if had_value:
                 self._set_custom_field_value(entry, previous)
+                # Si el control no puede representar el valor previo (opciones
+                # vacías o valor ausente de possible_values), se anota para
+                # omitir el campo del payload y no borrarlo en Redmine.
+                if entry["kind"] in ("list", "multiple"):
+                    previos = previous if isinstance(previous, list) else [previous]
+                    opciones = {str(v) for v in (entry["field"].possible_values or [])}
+                    entry["previo_no_representable"] = any(
+                        str(v) not in opciones for v in previos
+                    )
             elif entry["field"].default_value not in (None, ""):
                 self._set_custom_field_value(entry, entry["field"].default_value)
 
@@ -695,10 +716,7 @@ class TaskDialog(QDialog):
                 widget.setCurrentIndex(idx)
         elif kind == "multiple":
             selected = value if isinstance(value, list) else [value]
-            selected_strs = {str(v) for v in selected}
-            for i in range(widget.count()):
-                if widget.item(i).text() in selected_strs:
-                    widget.item(i).setSelected(True)
+            widget.set_selected_values([str(v) for v in selected])
         else:  # string / text
             if kind == "text":
                 widget.setPlainText(str(value))
@@ -733,8 +751,7 @@ class TaskDialog(QDialog):
         if kind == "list":
             return widget.currentData() or ""
         if kind == "multiple":
-            return [widget.item(i).text() for i in range(widget.count())
-                    if widget.item(i).isSelected()]
+            return widget.selected_values()
         if kind == "text":
             return widget.toPlainText().strip()
         return widget.text().strip()
@@ -744,13 +761,18 @@ class TaskDialog(QDialog):
         """Devuelve los valores de los campos personalizados listos para la API.
 
         Incluye con "" (o []) los campos que el issue ya tenía y el usuario ha
-        vaciado, para permitir limpiarlos; omite los vacíos sin valor previo.
+        vaciado, para permitir limpiarlos; omite los vacíos sin valor previo y los
+        que tenían un valor previo no representable (ese valor se conserva en Redmine).
         """
         result: dict[int, Any] = {}
         for cf_id, entry in self._custom_field_widgets.items():
             had_value = entry.get("had_value", False)
             value = self._read_custom_field_value(entry, had_value)
             if value == "" or value == []:
+                if entry.get("previo_no_representable"):
+                    # El control no puede representar el valor previo: se omite
+                    # para no borrarlo en Redmine al guardar.
+                    continue
                 if had_value:
                     result[cf_id] = [] if entry["kind"] == "multiple" else ""
                 continue

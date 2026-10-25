@@ -11,11 +11,12 @@ Cubren:
 
 from unittest.mock import MagicMock
 
-from PyQt6.QtCore import QDate
-from PyQt6.QtWidgets import QLineEdit
+from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtWidgets import QFrame, QLineEdit
 
 from app.dialogs.task_dialog import TaskDialog
 from app.services.redmine_client import RedmineCustomField
+from app.widgets.multi_value_combo import MultiValueCombo
 
 
 def _field(cf_id, name, fmt, **kwargs):
@@ -165,12 +166,7 @@ class TestEditModePreload:
         # Fecha: checkbox "Sin valor" desmarcado y fecha fijada
         assert w[4]["extra"].isChecked() is False
         assert w[4]["widget"].date().toString("yyyy-MM-dd") == "2026-05-01"
-        selected = [
-            w[5]["widget"].item(i).text()
-            for i in range(w[5]["widget"].count())
-            if w[5]["widget"].item(i).isSelected()
-        ]
-        assert selected == ["x", "y"]
+        assert w[5]["widget"].selected_values() == ["x", "y"]
 
     def test_default_value_applied_when_no_previous_value(self, qapp):
         redmine = MagicMock()
@@ -211,8 +207,7 @@ class TestSerialization:
         w[5]["widget"].setDate(QDate(2026, 5, 1))
         w[6]["widget"].setChecked(True)
         w[7]["widget"].setCurrentIndex(w[7]["widget"].findData("Alta"))
-        w[8]["widget"].item(0).setSelected(True)
-        w[8]["widget"].item(2).setSelected(True)
+        w[8]["widget"].set_selected_values(["x", "z"])
 
         result = dlg.custom_fields
         assert result[1] == "hola"
@@ -336,6 +331,18 @@ class TestUnsupportedFieldFormat:
         w["widget"].setText("https://ejemplo.com")
         assert dlg.custom_fields == {1: "https://ejemplo.com"}
 
+    def test_multiple_takes_precedence_over_unsupported_format(self, qapp):
+        """multiple manda sobre field_format: formato no soportado + multiple."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Enlace", "link", multiple=True, possible_values=["a", "b"])],
+        )
+
+        entry = dlg._custom_field_widgets[1]
+        assert entry["kind"] == "multiple"
+        assert isinstance(entry["widget"], MultiValueCombo)
+
 
 class TestRequiredFieldLabel:
     """Un campo obligatorio (is_required) se marca visualmente en la etiqueta."""
@@ -359,3 +366,255 @@ class TestRequiredFieldLabel:
 
         assert label_required.text() == "Obligatorio *:"
         assert label_optional.text() == "Opcional:"
+
+    def test_required_multiple_field_label_has_asterisk_suffix(self, qapp):
+        """Un campo de valor múltiple obligatorio también lleva el sufijo " *:"."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [
+                _field(
+                    1, "Obligatorio", "list", multiple=True,
+                    is_required=True, possible_values=["a"],
+                ),
+            ],
+        )
+
+        widget = dlg._custom_field_widgets[1]["widget"]
+        label = dlg._custom_fields_form.labelForField(widget)
+
+        assert label.text() == "Obligatorio *:"
+
+
+class TestMultipleFieldWidget:
+    """El campo de valor múltiple se construye con MultiValueCombo."""
+
+    def test_multiple_field_uses_multi_value_combo(self, qapp):
+        """3.1: kind "multiple" y widget MultiValueCombo con las opciones."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Multi", "list", multiple=True, possible_values=["A", "B"])],
+        )
+
+        entry = dlg._custom_field_widgets[1]
+        assert entry["kind"] == "multiple"
+        assert isinstance(entry["widget"], MultiValueCombo)
+        assert entry["widget"].selected_values() == []
+        # Las possible_values se materializan como items marcables
+        assert entry["widget"]._list.count() == 2
+        for i in range(entry["widget"]._list.count()):
+            item = entry["widget"]._list.item(i)
+            assert item.flags() & Qt.ItemFlag.ItemIsUserCheckable
+            assert item.text() == ["A", "B"][i]
+
+
+def test_multiple_preloads_previous_values(qapp):
+    """3.3: en edición se precargan los valores previos del campo múltiple."""
+    redmine = MagicMock()
+    dlg = _make_dialog(
+        redmine,
+        [_field(5, "Multi", "list", multiple=True, possible_values=["x", "y"])],
+        task_data=_edit_task_data({5: ["x", "y"]}),
+    )
+
+    entry = dlg._custom_field_widgets[5]
+    assert entry["widget"].selected_values() == ["x", "y"]
+
+
+def test_multiple_serializes_selected_values(qapp):
+    """3.4: serializa list[str] y [] al vaciar un campo con valor previo."""
+    redmine = MagicMock()
+    fields = [
+        _field(8, "Multi", "list", multiple=True, possible_values=["x", "y", "z"])
+    ]
+
+    dlg = _make_dialog(redmine, fields)
+    dlg._custom_field_widgets[8]["widget"].set_selected_values(["x", "z"])
+    assert dlg.custom_fields == {8: ["x", "z"]}
+
+    dlg2 = _make_dialog(redmine, fields, task_data=_edit_task_data({8: ["x"]}))
+    dlg2._custom_field_widgets[8]["widget"].set_selected_values([])
+    assert dlg2.custom_fields == {8: []}
+
+
+def test_multiple_default_value_applied_without_previous(qapp):
+    """3.5: sin valor previo se aplica default_value al campo múltiple."""
+    redmine = MagicMock()
+    dlg = _make_dialog(
+        redmine,
+        [_field(
+            5, "Multi", "list", multiple=True,
+            possible_values=["x", "y"], default_value="x",
+        )],
+    )
+
+    assert dlg._custom_field_widgets[5]["widget"].selected_values() == ["x"]
+
+
+class TestSimpleListCombo:
+    """El QComboBox de lista simple elide y expone tooltips completos."""
+
+    def test_list_combo_has_min_width_elision_and_tooltips(self, qapp):
+        """4.1: ancho mínimo, elisión por la derecha y tooltip por opción."""
+        redmine = MagicMock()
+        largo = "Valor-muy-largo-" * 10
+        dlg = _make_dialog(
+            redmine,
+            [_field(7, "Lista", "list", possible_values=[largo, "Alta"])],
+        )
+
+        combo = dlg._custom_field_widgets[7]["widget"]
+        assert combo.minimumContentsLength() == 20
+        assert combo.minimumWidth() == 200
+        assert combo.view().textElideMode() == Qt.TextElideMode.ElideRight
+        assert combo.itemData(1, Qt.ItemDataRole.ToolTipRole) == largo
+        assert combo.itemData(2, Qt.ItemDataRole.ToolTipRole) == "Alta"
+
+
+def test_list_without_options_disabled_with_help(qapp):
+    """4.3: sin possible_values el combo se deshabilita; el previo se preserva."""
+    redmine = MagicMock()
+    fields = [_field(7, "Lista", "list", possible_values=[])]
+
+    dlg = _make_dialog(redmine, fields)
+    combo = dlg._custom_field_widgets[7]["widget"]
+    assert combo.isEnabled() is False
+    assert combo.currentText() == "Sin opciones disponibles"
+    assert dlg.custom_fields == {}
+
+    dlg2 = _make_dialog(
+        redmine, fields, task_data=_edit_task_data({7: "Antigua"})
+    )
+    assert dlg2._custom_field_widgets[7]["widget"].isEnabled() is False
+    # El control no puede representar el valor previo: se omite del payload
+    # para que Redmine conserve el valor en lugar de borrarlo.
+    assert dlg2.custom_fields == {}
+
+
+def test_multiple_without_options_disabled_and_preserves_previous_value(qapp):
+    """4.5: sin possible_values el multiselector se deshabilita; previo preservado."""
+    redmine = MagicMock()
+    fields = [_field(8, "Multi", "list", multiple=True, possible_values=[])]
+
+    dlg = _make_dialog(redmine, fields)
+    widget = dlg._custom_field_widgets[8]["widget"]
+    assert widget.isEnabled() is False
+    assert widget._button.text() == "Sin opciones disponibles"
+    assert dlg.custom_fields == {}
+
+    dlg2 = _make_dialog(
+        redmine, fields, task_data=_edit_task_data({8: ["x"]})
+    )
+    assert dlg2._custom_field_widgets[8]["widget"].isEnabled() is False
+    # El valor previo no es representable: se omite para no borrarlo en Redmine.
+    assert dlg2.custom_fields == {}
+
+
+def test_list_previous_value_outside_options_is_preserved(qapp):
+    """El valor previo fuera de possible_values se omite y no se borra."""
+    redmine = MagicMock()
+    dlg = _make_dialog(
+        redmine,
+        [_field(7, "Lista", "list", possible_values=["Baja", "Alta"])],
+        task_data=_edit_task_data({7: "Antigua"}),
+    )
+
+    assert dlg._custom_field_widgets[7]["widget"].currentData() in (None, "")
+    assert dlg.custom_fields == {}
+
+
+def test_multiple_previous_value_partially_representable_serializes_selection(qapp):
+    """Si el usuario deja marcas, se envía la selección y se pierde el no representable."""
+    redmine = MagicMock()
+    dlg = _make_dialog(
+        redmine,
+        [_field(8, "Multi", "list", multiple=True, possible_values=["x", "y"])],
+        task_data=_edit_task_data({8: ["x", "z"]}),
+    )
+
+    # "z" no está entre las opciones y no puede marcarse; "x" sí queda marcado.
+    assert dlg.custom_fields == {8: ["x"]}
+
+
+def test_reload_rebuilds_multiselector_without_open_popups(qapp):
+    """5.3: recargar al cambiar de proyecto no deja popups abiertos."""
+    redmine = MagicMock()
+
+    def fields_for(pid):
+        if pid == 1:
+            return [_field(1, "Multi", "list", multiple=True, possible_values=["x"])]
+        return [_field(2, "Multi", "list", multiple=True, possible_values=["y"])]
+
+    redmine.get_project_custom_fields.side_effect = fields_for
+    dlg = TaskDialog(
+        projects=[(1, "P1"), (2, "P2")],
+        default_project_id=1,
+        redmine_client=redmine,
+    )
+
+    combo = dlg._custom_field_widgets[1]["widget"]
+    combo.show()
+    qapp.processEvents()
+    combo._toggle_popup()
+    assert combo._popup.isVisible() is True
+
+    combo.hide()
+    assert combo._popup.isVisible() is False
+    assert combo._popup.parent() is combo
+
+    dlg._project_combo.setCurrentIndex(1)
+
+    nuevo = dlg._custom_field_widgets[2]["widget"]
+    assert nuevo._popup.isVisible() is False
+    assert nuevo._popup.parent() is nuevo
+
+
+def test_project_change_with_open_popup_leaves_no_visible_popup(qapp):
+    """5.3: cambiar de proyecto con el popup abierto (sin hide) no deja popups."""
+    from PyQt6 import sip
+
+    def visible_popups():
+        return {
+            w
+            for w in qapp.topLevelWidgets()
+            if isinstance(w, QFrame)
+            and w.isVisible()
+            and bool(w.windowFlags() & Qt.WindowType.Popup)
+        }
+
+    redmine = MagicMock()
+
+    def fields_for(pid):
+        if pid == 1:
+            return [_field(1, "Multi", "list", multiple=True, possible_values=["x"])]
+        return [_field(2, "Multi", "list", multiple=True, possible_values=["y"])]
+
+    redmine.get_project_custom_fields.side_effect = fields_for
+    dlg = TaskDialog(
+        projects=[(1, "P1"), (2, "P2")],
+        default_project_id=1,
+        redmine_client=redmine,
+    )
+
+    popups_antes = visible_popups()
+    combo = dlg._custom_field_widgets[1]["widget"]
+    popup = combo._popup
+    combo.show()
+    qapp.processEvents()
+    combo._toggle_popup()
+    assert popup.isVisible() is True
+
+    # Sin llamar a combo.hide(): la recarga de campos destruye el combo antiguo
+    dlg._project_combo.setCurrentIndex(1)
+    qapp.processEvents()
+
+    # El combo/popup antiguo puede haberse destruido ya: evitar RuntimeError
+    if not sip.isdeleted(combo):
+        assert combo.isVisible() is False
+    if not sip.isdeleted(popup):
+        assert popup.isVisible() is False
+    assert visible_popups() == popups_antes
+
+    nuevo = dlg._custom_field_widgets[2]["widget"]
+    assert nuevo._popup.isVisible() is False
