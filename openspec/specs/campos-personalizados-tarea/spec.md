@@ -10,19 +10,152 @@ El `RedmineClient` SHALL exponer una dataclass `RedmineCustomField` que represen
 - **THEN** el `RedmineCustomField` resultante tiene `id=3`, `name="Severidad"`, `field_format="list"` y `possible_values=["Baja", "Alta"]`
 
 ### Requirement: Obtención de los campos personalizados del proyecto
-El `RedmineClient` SHALL exponer un método `get_project_custom_fields(project_id)` que realice `GET /projects/{id}.json?include=issue_custom_fields` y devuelva la lista de campos personalizados definidos en ese proyecto.
+El `RedmineClient` SHALL exponer `get_project_custom_fields(project_id)` devolviendo, para cada campo personalizado del proyecto, su definición. La pertenencia al proyecto, el nombre y el orden SHALL obtenerse de `GET /projects/{id}.json?include=issue_custom_fields`, que en Redmine solo devuelve `id` y `name`. La definición SHALL resolverse en cascada: (1) `GET /custom_fields.json`, filtrando `customized_type == "issue"` y los ids presentes en la pertenencia, con paginación defensiva: una sola petición si la respuesta no trae `total_count` numérico, y peticiones con `limit`/`offset` hasta `total_count` o hasta una página vacía, con tope de 20 páginas, si lo trae; (2) si esa llamada falla por cualquier motivo (401, 403, 404, 500, timeout, error de conexión o respuesta inválida) o no cubre todos los ids, el formulario HTML `GET /projects/{id}/issues/new` con la cookie de sesión, parseando los controles `issue[custom_field_values][<id>]`; (3) si aun así no hay definición, el campo SHALL devolverse con `field_format` vacío y `definition_source="none"`.
+
+La definición completa (`is_required`, `default_value`, `visible` y `editable`) SHALL garantizarse únicamente por la vía de administrador. Por la vía HTML solo SHALL resolverse `field_format`, `multiple` y `possible_values`; el resto SHALL quedar en sus valores por defecto (`False`, `""`, `True`, `True`). Cada campo devuelto SHALL indicar en `definition_source` el origen de su definición (`"admin"`, `"html"` o `"none"`) y, cuando no se resuelva, un `degraded_reason` legible.
+
+Los niveles 2 y 3 SHALL capturar cualquier `RedmineError` y no SHALL propagarlo; solo el fallo de la llamada de pertenencia SHALL propagarse como `RedmineError`.
 
 #### Scenario: Proyecto con campos personalizados
 - **WHEN** se llama a `get_project_custom_fields(7)` y el proyecto define tres campos personalizados
-- **THEN** el método devuelve una lista con tres `RedmineCustomField` correspondientes a las entradas de `issue_custom_fields`
+- **THEN** el método devuelve una lista con tres `RedmineCustomField` correspondientes a los ids de `issue_custom_fields`
 
 #### Scenario: Proyecto sin campos personalizados
 - **WHEN** el proyecto no define ningún campo personalizado
 - **THEN** el método devuelve una lista vacía y no lanza excepción
 
-#### Scenario: Error al obtener los campos
-- **WHEN** la llamada al proyecto falla o el proyecto no es accesible
+#### Scenario: Error al obtener la pertenencia de los campos
+- **WHEN** la llamada a `GET /projects/{id}.json?include=issue_custom_fields` falla o el proyecto no es accesible
 - **THEN** el error se propaga como `RedmineError` y la interfaz oculta la sección de campos personalizados sin romper el diálogo
+
+#### Scenario: El include solo devuelve id y nombre
+- **WHEN** la pertenencia devuelve entradas con solo `id` y `name` para un campo de formato `list` con opciones
+- **AND** `GET /custom_fields.json` devuelve su definición completa
+- **THEN** el `RedmineCustomField` resultante tiene `field_format="list"`, las opciones reales en `possible_values` y `definition_source="admin"`
+
+#### Scenario: Definición completa solo por la vía de administrador
+- **WHEN** un campo se resuelve con `GET /custom_fields.json`
+- **THEN** se conservan `is_required`, `default_value`, `visible` y `editable` de la definición
+- **AND** `definition_source` vale `"admin"`
+
+#### Scenario: La vía HTML solo resuelve formato, multiplicidad y opciones
+- **WHEN** un campo solo se resuelve por el formulario HTML
+- **THEN** `field_format`, `multiple` y `possible_values` reflejan el control encontrado
+- **AND** `is_required`, `default_value`, `visible` y `editable` conservan sus valores por defecto
+- **AND** `definition_source` vale `"html"`
+
+#### Scenario: Sin permisos de administrador pero con cookie de sesión
+- **WHEN** `GET /custom_fields.json` responde HTTP 403 y hay cookie de sesión configurada
+- **THEN** el sistema obtiene el formulario HTML de nueva incidencia del proyecto
+- **AND** resuelve `field_format`, `multiple` y `possible_values` a partir de los controles `issue[custom_field_values][<id>]`
+- **AND** no muestra ningún error al usuario
+
+#### Scenario: API key sin permisos y con HTTP 401
+- **WHEN** `GET /custom_fields.json` responde HTTP 401
+- **THEN** el sistema intenta el fallback HTML si hay cookie de sesión, con el mismo tratamiento que el 403
+
+#### Scenario: Cualquier fallo de la API de definiciones intenta el fallback HTML
+- **WHEN** `GET /custom_fields.json` falla con HTTP 404, HTTP 500, timeout o error de conexión
+- **AND** hay cookie de sesión configurada
+- **THEN** el sistema intenta el formulario HTML con el mismo tratamiento que para 401/403
+- **AND** no propaga el error de la API de definiciones
+
+#### Scenario: Sin cookie de sesión
+- **WHEN** `GET /custom_fields.json` falla por cualquier motivo y no hay cookie de sesión configurada
+- **THEN** el sistema no realiza ninguna petición HTML
+- **AND** devuelve los campos con `field_format=""` y `definition_source="none"` sin lanzar excepción
+
+#### Scenario: Definiciones solo para campos de incidencia
+- **WHEN** `GET /custom_fields.json` devuelve definiciones de tipos distintos de incidencia
+- **THEN** solo se consideran las que tienen `customized_type` igual a `"issue"`
+
+#### Scenario: Definiciones de campos ajenos al proyecto
+- **WHEN** `GET /custom_fields.json` devuelve una definición de incidencia cuyo id no figura en la pertenencia del proyecto
+- **THEN** esa definición no se incluye en el resultado
+
+#### Scenario: Paginación defensiva de la API de definiciones
+- **WHEN** `GET /custom_fields.json` devuelve `total_count` numérico mayor que el número de definiciones de la primera página
+- **THEN** el cliente solicita las páginas siguientes con `limit`/`offset` hasta completar `total_count` o recibir una página vacía
+- **AND** aplica un tope de seguridad de 20 páginas para evitar bucles
+- **AND** si el endpoint ignora la paginación y devuelve todo, no repite peticiones
+
+#### Scenario: Respuesta sin total_count no pagina
+- **WHEN** `GET /custom_fields.json` devuelve definiciones sin `total_count` o con un `total_count` no numérico
+- **THEN** el cliente realiza una sola petición y no solicita páginas adicionales con `limit`/`offset`
+- **AND** devuelve todas las definiciones recibidas en esa respuesta
+
+#### Scenario: Opciones en formato objeto o cadena
+- **WHEN** la definición devuelve `possible_values` como objetos con `value` y `label`, o como cadenas
+- **THEN** `possible_values` se normaliza a una lista de cadenas con el valor de cada opción
+
+#### Scenario: Lista renderizada como desplegable en el formulario
+- **WHEN** el formulario HTML contiene un `select` simple con el nombre `issue[custom_field_values][3]` y cuyos valores no vacíos coinciden con sus etiquetas
+- **THEN** el campo se resuelve como `field_format="list"`, `multiple=False` y las etiquetas en orden en `possible_values`
+
+#### Scenario: Lista múltiple renderizada como desplegable múltiple
+- **WHEN** el formulario contiene un `select multiple` o un nombre con sufijo `[]` para el campo
+- **AND** sus valores no vacíos coinciden con sus etiquetas
+- **THEN** el campo se resuelve como `field_format="list"` con `multiple=True`
+
+#### Scenario: Discriminador de desplegable de lista
+- **WHEN** un `select` tiene opciones cuyo `value` no vacío coincide exactamente con el texto de la etiqueta, tras `html.unescape` y `strip`
+- **THEN** el campo se clasifica como `list`
+
+#### Scenario: Desplegable de usuario, versión o enumeración no es una lista
+- **WHEN** un `select` tiene opciones con `value` numérico de id y etiqueta con el nombre (`value != label`)
+- **THEN** el campo NO se clasifica como `list`
+- **AND** queda sin resolver con `field_format=""` y `definition_source="none"`
+
+#### Scenario: Booleano renderizado como desplegable
+- **WHEN** el desplegable de un campo tiene exactamente las opciones `1` y `0`
+- **THEN** el campo se resuelve como `bool`
+- **AND** esta comprobación prevalece sobre el discriminador de lista
+
+#### Scenario: Control no soportado por el parser
+- **WHEN** el formulario solo ofrece un `textarea`, un `input type="date"`, un `input type="number"`, un `input type="text"` o un grupo de radios/checkboxes para el campo
+- **THEN** el campo no se reconoce y queda sin resolver con `field_format=""`
+- **AND** se comporta como hoy (texto libre), sin regresión
+
+#### Scenario: Formulario HTML sin el campo
+- **WHEN** el formulario se obtiene correctamente pero no contiene controles reconocidos para uno de los ids de la pertenencia
+- **THEN** ese campo se devuelve con `field_format=""`, `definition_source="none"` y su motivo
+- **AND** el resto de campos se resuelven con normalidad
+
+#### Scenario: Formulario HTML redirigido al login
+- **WHEN** la petición del formulario HTML redirige a la página de login por cookie caducada o no válida
+- **THEN** el sistema trata el intento como fallo de resolución sin lanzar excepción
+- **AND** registra un aviso indicando que la cookie no es válida
+
+#### Scenario: Formulario válido sin controles de campos personalizados
+- **WHEN** una petición HTML devuelve HTTP 200 con HTML válido pero sin ningún control `issue[custom_field_values][<id>]`
+- **THEN** el sistema trata ese resultado como negativo **por proyecto** y devuelve los campos con `field_format=""` sin lanzar excepción
+- **AND** no fija el fallo global de autenticación del HTML
+- **AND** la resolución de los campos de otro proyecto por HTML sigue siendo posible
+
+#### Scenario: Página de login identificable en una respuesta 200
+- **WHEN** la petición HTML devuelve HTTP 200 con un formulario de login identificable (`id="login-form"` o un campo `name="username"`) y sin controles de campos personalizados
+- **THEN** el fallo se memoriza globalmente como fallo de autenticación del HTML
+- **AND** no se vuelve a pedir el formulario HTML para ningún proyecto
+
+#### Scenario: Formulario válido sin controles del proyecto A no impide resolver el proyecto B
+- **WHEN** el formulario HTML del proyecto A es un HTTP 200 válido sin controles de campos personalizados
+- **AND** el formulario HTML del proyecto B contiene un `select` reconocible para sus campos
+- **THEN** los campos del proyecto A se degradan con `definition_source="none"`
+- **AND** los campos del proyecto B se resuelven por HTML con `definition_source="html"`
+- **AND** el cliente solicitó el formulario HTML de ambos proyectos
+
+#### Scenario: Claves extra en la pertenencia se ignoran
+- **WHEN** la pertenencia incluye claves de definición además de `id` y `name`
+- **THEN** esas claves se ignoran deliberadamente
+- **AND** la definición solo procede de los niveles 2 o 3
+
+#### Scenario: Nombre de la pertenencia prevalece
+- **WHEN** el nombre del campo en la pertenencia difiere del nombre de la definición
+- **THEN** el `RedmineCustomField` devuelto usa el nombre de la pertenencia
+
+#### Scenario: Orden de la pertenencia preservado
+- **WHEN** la pertenencia devuelve los campos en un orden determinado y la definición global en otro
+- **THEN** la lista devuelta conserva el orden de la pertenencia
 
 ### Requirement: Parseo de los valores de campos personalizados del issue
 El sistema SHALL parsear el array `custom_fields` de la respuesta de un issue y exponer los valores actuales. `RedmineIssue` SHALL incluir un campo `custom_fields` como diccionario de `id` de campo a valor, y `get_issue_with_journals` SHALL incluir los valores actuales del issue.
@@ -83,7 +216,7 @@ El `TaskDialog` SHALL mostrar una sección "Campos personalizados" situada ANTES
 - **THEN** cada control muestra el valor actual del issue para su campo
 
 ### Requirement: Edición de valores según el formato del campo
-El `TaskDialog` SHALL construir el control de edición de cada campo personalizado en función de su `field_format` y SHALL soportar campos de valor múltiple. Los textos de las opciones SHALL mostrarse elididos cuando no quepan, con tooltip del valor completo, y los campos sin `possible_values` SHALL mostrarse deshabilitados con un texto de ayuda. Los campos de lista cuyo valor previo no sea representable SHALL omitirse del payload para conservar el valor existente en Redmine.
+El `TaskDialog` SHALL construir el control de edición de cada campo personalizado en función de su `field_format` y SHALL soportar campos de valor múltiple. Los textos de las opciones SHALL mostrarse elididos cuando no quepan, con tooltip del valor completo, y los campos sin `possible_values` SHALL mostrarse deshabilitados con un texto de ayuda. La conservación del valor previo SHALL depender del tipo de control: en un campo de valor múltiple con `possible_values` no vacíos, los valores previos ausentes de las opciones SHALL inyectarse en el selector como ítems adicionales marcados y SHALL enviarse en el payload completo; en un campo de valor múltiple con `possible_values` vacío y en una lista simple con valor previo fuera de las opciones, el campo SHALL omitirse del payload para conservar el valor existente en Redmine.
 
 #### Scenario: Campo de tipo texto corto
 - **WHEN** el campo tiene `field_format` "string"
@@ -157,9 +290,23 @@ El `TaskDialog` SHALL construir el control de edición de cada campo personaliza
 - **WHEN** el campo tiene `multiple` verdadero, el issue tenía valores previos representables y el usuario desmarca todas las opciones
 - **THEN** el valor se serializa como lista vacía para limpiar el campo en Redmine
 
-#### Scenario: Campo de lista con valor previo no representable
-- **WHEN** el campo es de lista simple o de valor múltiple y el valor previo del issue no está entre las `possible_values` (incluido el caso de `possible_values` vacío)
-- **THEN** el campo no se incluye en el payload y el valor existente se conserva en Redmine
+#### Scenario: Múltiple con valor previo parcialmente representable
+- **WHEN** el campo es de valor múltiple, `possible_values` no está vacío y el valor previo del issue contiene elementos que no figuran entre las opciones
+- **THEN** los elementos ausentes se inyectan en el selector como ítems adicionales marcados, sin duplicar los ya presentes
+- **AND** el payload envía la lista completa, incluidos los valores inyectados
+
+#### Scenario: Desmarcado explícito de un valor inyectado
+- **WHEN** el usuario desmarca un valor inyectado en un campo de valor múltiple con `possible_values` no vacío
+- **THEN** ese valor deja de enviarse en el payload
+- **AND** si desmarca todos los valores, el payload envía una lista vacía como limpieza explícita
+
+#### Scenario: Múltiple sin opciones con valor previo
+- **WHEN** el campo es de valor múltiple y `possible_values` está vacío
+- **THEN** el campo se omite del payload y el valor existente se conserva en Redmine
+
+#### Scenario: Lista simple con valor previo fuera de las opciones
+- **WHEN** el campo es de lista simple y el valor previo del issue no está entre las `possible_values`
+- **THEN** el campo se omite del payload y el valor existente se conserva en Redmine
 
 ### Requirement: Marcado de campos obligatorios y valor por defecto
 El `TaskDialog` SHALL indicar visualmente los campos personalizados con `is_required` verdadero y SHALL aplicar el `default_value` del campo cuando exista.
@@ -190,4 +337,175 @@ Al aceptar el `TaskDialog`, el sistema SHALL exponer los valores de los campos p
 #### Scenario: Campo vacío sin valor previo
 - **WHEN** un campo personalizado no tiene valor y el issue no tenía valor previo
 - **THEN** ese campo no se incluye en el payload enviado
+
+### Requirement: Caché de definiciones de campos personalizados
+El `RedmineClient` SHALL cachear en memoria el resultado por proyecto y las definiciones globales de incidencia obtenidas de la API de administrador, memorizando también los intentos fallidos para no repetirlos. El fallo de autenticación del formulario HTML —redirección a login/SSO, HTTP 401/403 en la petición HTML o página de login identificable— SHALL memorizarse de forma global en el cliente, de modo que un informe con N proyectos realice como máximo una petición HTML condenada a login. Un HTTP 200 con HTML válido pero sin controles `issue[custom_field_values]` NO SHALL considerarse fallo de autenticación: SHALL memorizarse como negativo por proyecto y NO SHALL impedir resolver los campos de otros proyectos. La caché SHALL vivir en la instancia del cliente y SHALL poder limpiarse explícitamente mediante `clear_custom_field_cache()`. Las excepciones de la llamada de pertenencia no SHALL cachearse.
+
+#### Scenario: Segunda llamada para el mismo proyecto
+- **WHEN** se llama dos veces a `get_project_custom_fields` con el mismo id de proyecto
+- **THEN** la segunda llamada no realiza ninguna petición HTTP
+- **AND** devuelve el mismo contenido de definiciones
+
+#### Scenario: Varios proyectos en una misma sesión
+- **WHEN** se consultan los campos de tres proyectos distintos
+- **THEN** la API de definiciones se consulta una sola vez
+- **AND** la pertenencia se consulta una vez por proyecto
+
+#### Scenario: Proyecto sin campos personalizados
+- **WHEN** la pertenencia devuelve una lista vacía
+- **THEN** no se consulta la API de definiciones ni el formulario HTML
+
+#### Scenario: Fallo de permisos memorizado entre proyectos
+- **WHEN** la API de definiciones responde 403 y hay cookie de sesión
+- **AND** se consultan dos proyectos distintos
+- **THEN** la API de definiciones se intenta una sola vez
+- **AND** el formulario HTML se consulta como máximo una vez por proyecto
+
+#### Scenario: Fallo de autenticación del HTML memorizado globalmente
+- **WHEN** el formulario HTML de un proyecto redirige a login, devuelve HTTP 401/403 o devuelve una página de login identificable
+- **AND** se consulta otro proyecto con la misma cookie
+- **THEN** no se vuelve a pedir el formulario HTML
+- **AND** los campos del segundo proyecto se degradan directamente con `definition_source="none"`
+
+#### Scenario: Formulario válido sin controles no se memoriza globalmente
+- **WHEN** el formulario HTML del proyecto A devuelve HTTP 200 con HTML válido sin controles de campos personalizados
+- **AND** se consulta el proyecto B
+- **THEN** el cliente solicita el formulario HTML del proyecto B
+- **AND** el resultado negativo del proyecto A no se reutiliza para el proyecto B
+
+#### Scenario: Informe ODS con N proyectos
+- **WHEN** el informe recorre N proyectos y la cookie de sesión no es válida
+- **THEN** se realiza como máximo una petición HTML fallida por cliente
+- **AND** los N proyectos se degradan a texto libre sin lanzar excepción
+
+#### Scenario: Ausencia de cookie memorizada
+- **WHEN** no hay cookie de sesión y la API de definiciones falla por cualquier motivo
+- **AND** se consultan varios proyectos
+- **THEN** no se realiza ninguna petición HTML
+
+#### Scenario: Limpieza explícita de la caché
+- **WHEN** la aplicación invoca `clear_custom_field_cache()`
+- **THEN** la siguiente consulta vuelve a pedir la pertenencia y las definiciones
+- **AND** se olvida el fallo global de autenticación del formulario HTML
+
+#### Scenario: Cambio de URL o de API key
+- **WHEN** la aplicación crea un `RedmineClient` nuevo tras cambiar la URL o la API key
+- **THEN** el cliente nuevo no reutiliza las definiciones cacheadas por el anterior
+
+#### Scenario: El resultado no expone la caché interna
+- **WHEN** el consumidor modifica la lista devuelta por `get_project_custom_fields`
+- **THEN** una llamada posterior devuelve el contenido cacheado sin alteraciones
+
+### Requirement: Degradación a texto libre y diagnóstico
+Cuando la definición de un campo no pueda resolverse, el sistema SHALL devolver el campo con `field_format=""`, `definition_source="none"` y un `degraded_reason` legible para que el diálogo use el control de texto libre, y SHALL registrar la degradación en el log con el proyecto, el id, el nombre y el motivo. Un campo cuya definición sí se resuelve como lista sin opciones SHALL renderizarse como selector deshabilitado con el texto de ayuda, nunca como caja de texto. La degradación no SHALL alterar el valor previo del issue.
+
+#### Scenario: Campo sin definición resoluble
+- **WHEN** un campo de la pertenencia no se resuelve por ninguna de las vías
+- **THEN** el diálogo lo muestra como `QLineEdit`
+- **AND** la sección de campos personalizados permanece visible y el diálogo no falla
+- **AND** el campo tiene `definition_source="none"` y un `degraded_reason` no vacío
+
+#### Scenario: Origen de la definición
+- **WHEN** un campo se resuelve por la API de administrador, por el formulario HTML o por ninguna vía
+- **THEN** `definition_source` vale `"admin"`, `"html"` o `"none"` respectivamente
+- **AND** `degraded_reason` solo tiene contenido en el caso `"none"`
+
+#### Scenario: Lista conocida sin opciones
+- **WHEN** un campo se resuelve como `field_format="list"` con `possible_values` vacío
+- **THEN** el diálogo muestra el selector deshabilitado con el texto de ayuda de "sin opciones"
+- **AND** no lo convierte en caja de texto
+
+#### Scenario: Aviso de degradación
+- **WHEN** un campo no se resuelve
+- **THEN** el log registra un aviso con el id del proyecto, el id del campo, su nombre y el motivo
+- **AND** el aviso no contiene el valor de la cookie de sesión ni la API key
+
+#### Scenario: Valor previo en un campo no resoluble
+- **WHEN** un issue tiene valor en un campo cuya definición no se resuelve
+- **THEN** el control de texto libre se precarga con ese valor
+- **AND** el valor se envía sin cambios si el usuario no lo modifica
+
+#### Scenario: Fallo total de la pertenencia
+- **WHEN** falla la obtención de la pertenencia de los campos del proyecto
+- **THEN** el diálogo oculta la sección de campos personalizados sin romper el resto del formulario
+
+### Requirement: Aviso visible de definición incompleta en el diálogo
+Cuando al menos un campo personalizado tenga `definition_source == "none"`, `TaskDialog` SHALL mostrar un aviso visible, discreto y no modal dentro del grupo "Campos personalizados", con texto accionable que indique configurar la Cookie de sesión en Ajustes o usar una API key de administrador y que los campos se muestran como texto libre. El aviso SHALL mostrarse una sola vez por grupo, no repetirse por campo, no bloquear el diálogo y ocultarse cuando todos los campos se resuelvan o no haya campos. El campo Cookie de `settings_dialog.py` SHALL explicar en su ayuda o tooltip que permite resolver campos personalizados cuando la API key no es de administrador.
+
+#### Scenario: Aviso visible cuando hay degradación
+- **WHEN** el diálogo carga campos y al menos uno tiene `definition_source="none"`
+- **THEN** se muestra un único `QLabel` de aviso dentro del grupo "Campos personalizados"
+- **AND** el texto menciona la Cookie de sesión en Ajustes, la API key de administrador y el texto libre
+- **AND** el aviso no es un diálogo modal ni bloquea la edición
+
+#### Scenario: Sin aviso cuando todo se resuelve
+- **WHEN** todos los campos tienen `definition_source` igual a `"admin"` o `"html"`
+- **THEN** el aviso no se muestra
+
+#### Scenario: Sin aviso cuando no hay campos
+- **WHEN** el proyecto no tiene campos personalizados o la pertenencia falla
+- **THEN** el grupo se oculta y el aviso no se muestra
+
+#### Scenario: El aviso no se repite por campo
+- **WHEN** hay tres campos con `definition_source="none"`
+- **THEN** solo se muestra un aviso en el grupo
+- **AND** no se añade un aviso por cada campo
+
+#### Scenario: El aviso se limpia al cambiar de proyecto
+- **WHEN** se recargan los campos de otro proyecto sin degradación
+- **THEN** el aviso anterior desaparece
+
+#### Scenario: Ayuda de Cookie en Ajustes
+- **WHEN** el usuario consulta la ayuda o el tooltip del campo Cookie
+- **THEN** el texto explica que la cookie permite resolver campos personalizados cuando la API key no es de administrador
+
+### Requirement: Payload y alineación con la definición
+El payload SHALL permanecer sin cambios cuando la resolución no aporte información nueva. Cuando la definición de administrador aporte `is_required` o `default_value`, el diálogo SHALL alinearse intencionadamente con Redmine mostrando el asterisco de obligatorio y aplicando el valor por defecto en altas. En una tarea existente sin modificar, los valores representables SHALL enviarse sin cambios; los valores previos de un campo `multiple` con `possible_values` no vacíos que no figuren entre las opciones SHALL inyectarse en el widget como ítems marcados y SHALL enviarse completos en el payload; un campo `multiple` con `possible_values` vacío y una lista simple con valor previo fuera de las opciones SHALL omitirse del payload para conservar el valor existente en Redmine.
+
+#### Scenario: Payload sin cambios si la definición no aporta información nueva
+- **WHEN** el usuario abre una tarea existente y acepta sin modificar los campos personalizados
+- **AND** la definición solo aporta formato, multiplicidad u opciones
+- **THEN** los valores enviados coinciden con los valores previos representables
+- **AND** los valores no representables se conservan según su tipo: inyección para los múltiples con opciones y omisión del payload para el resto
+
+#### Scenario: Múltiple con valor previo parcialmente representable
+- **WHEN** un campo `multiple` con `possible_values` no vacíos tiene valores previos y alguno de ellos no figura entre las opciones
+- **THEN** los valores ausentes se inyectan en el `MultiValueCombo` mediante `add_missing_items` como ítems adicionales marcados
+- **AND** el payload envía la lista completa, incluidos los valores inyectados (por ejemplo `["x", "z"]`)
+- **AND** los valores inyectados no se duplican si ya estaban presentes
+
+#### Scenario: Desmarcado explícito de un valor inyectado
+- **WHEN** el usuario desmarca un valor inyectado en un campo `multiple` con `possible_values` no vacíos
+- **THEN** ese valor deja de enviarse en el payload
+- **AND** si desmarca todos los valores, el payload envía `[]` como limpieza explícita
+
+#### Scenario: Múltiple sin opciones con valor previo
+- **WHEN** un campo `multiple` tiene `possible_values` vacío y el issue tiene valor previo
+- **THEN** el widget se muestra deshabilitado y el campo se omite del payload
+- **AND** el valor almacenado en Redmine no se borra
+
+#### Scenario: Lista simple con valor previo fuera de las opciones
+- **WHEN** una lista simple tiene un valor previo que no figura en `possible_values`
+- **THEN** el campo se omite del payload
+- **AND** el valor almacenado en Redmine no se borra
+
+#### Scenario: Obligatoriedad aportada por la definición
+- **WHEN** la definición de administrador marca un campo con `is_required=True`
+- **THEN** el diálogo muestra el asterisco de obligatorio en su etiqueta
+- **AND** se mantiene la validación existente del diálogo
+
+#### Scenario: Valor por defecto aplicado en altas
+- **WHEN** la definición de administrador aporta `default_value` no vacío y se crea una tarea nueva
+- **THEN** el widget del campo se inicializa con ese valor por defecto
+- **AND** el payload envía ese valor si el usuario no lo cambia
+
+#### Scenario: La vía HTML no altera obligatoriedad ni valor por defecto
+- **WHEN** un campo se resuelve solo por el formulario HTML
+- **THEN** el diálogo no añade asterisco ni aplica valor por defecto distintos de los valores por defecto del modelo
+- **AND** el payload se comporta como antes del cambio
+
+#### Scenario: Tarea existente sin modificar conserva valores no representables no inyectables
+- **WHEN** un campo de lista simple o un campo `multiple` sin opciones tiene valor previo en Redmine y el usuario acepta sin tocarlo
+- **THEN** el campo se omite del payload
+- **AND** el valor almacenado en Redmine no se borra
 

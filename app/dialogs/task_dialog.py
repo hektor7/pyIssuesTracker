@@ -251,8 +251,27 @@ class TaskDialog(QDialog):
         # --- Grupo: Campos personalizados ---
         # Se inserta entre Checklist y Comentarios; oculto hasta cargar campos.
         self._custom_fields_group = QGroupBox("Campos personalizados")
-        self._custom_fields_form = QFormLayout(self._custom_fields_group)
+        custom_fields_layout = QVBoxLayout(self._custom_fields_group)
+        custom_fields_layout.setSpacing(6)
+
+        # Aviso único de degradación (D7): se muestra solo si algún campo
+        # quedó sin definición y el grupo está visible.
+        self._custom_fields_notice = QLabel(
+            "No se pudieron obtener los tipos de algunos campos personalizados. "
+            "Configura la Cookie de sesión en Ajustes o usa una API key de "
+            "administrador. Se muestran como texto libre."
+        )
+        self._custom_fields_notice.setWordWrap(True)
+        self._custom_fields_notice.setStyleSheet(
+            "color: #856404; background-color: #fff3cd; "
+            "border: 1px solid #ffeeba; border-radius: 4px; padding: 6px;"
+        )
+        self._custom_fields_notice.setVisible(False)
+        custom_fields_layout.addWidget(self._custom_fields_notice)
+
+        self._custom_fields_form = QFormLayout()
         self._custom_fields_form.setSpacing(6)
+        custom_fields_layout.addLayout(self._custom_fields_form)
         self._custom_fields_group.setVisible(False)
         scroll_layout.addWidget(self._custom_fields_group)
 
@@ -569,10 +588,17 @@ class TaskDialog(QDialog):
         for field_def in fields:
             self._add_custom_field_widget(field_def)
         self._apply_custom_field_values()
+        self._custom_fields_notice.setVisible(
+            any(
+                getattr(field_def, "definition_source", "") == "none"
+                for field_def in fields
+            )
+        )
         self._custom_fields_group.setVisible(True)
 
     def _clear_custom_fields(self):
         """Elimina los widgets de campos personalizados construidos."""
+        self._custom_fields_notice.setVisible(False)
         while self._custom_fields_form.rowCount():
             self._custom_fields_form.removeRow(0)
         self._custom_field_widgets.clear()
@@ -673,13 +699,37 @@ class TaskDialog(QDialog):
             had_value = previous is not None and previous != "" and previous != []
             entry["had_value"] = had_value
             if had_value:
+                # Un múltiple puede tener valores previos que ya no estén en
+                # possible_values: se inyectan como opciones marcadas para no
+                # perderlos al guardar (el usuario puede desmarcarlos).
+                if (
+                    entry["kind"] == "multiple"
+                    and entry["field"].possible_values
+                ):
+                    previos = (
+                        previous if isinstance(previous, list) else [previous]
+                    )
+                    opciones = {
+                        str(v) for v in entry["field"].possible_values or []
+                    }
+                    faltantes = [
+                        str(v)
+                        for v in previos
+                        if str(v) and str(v) not in opciones
+                    ]
+                    if faltantes:
+                        entry["widget"].add_missing_items(faltantes)
+                        entry["previos_inyectados"] = faltantes
                 self._set_custom_field_value(entry, previous)
                 # Si el control no puede representar el valor previo (opciones
                 # vacías o valor ausente de possible_values), se anota para
                 # omitir el campo del payload y no borrarlo en Redmine.
                 if entry["kind"] in ("list", "multiple"):
                     previos = previous if isinstance(previous, list) else [previous]
-                    opciones = {str(v) for v in (entry["field"].possible_values or [])}
+                    opciones = {
+                        str(v) for v in (entry["field"].possible_values or [])
+                    }
+                    opciones.update(entry.get("previos_inyectados", []))
                     entry["previo_no_representable"] = any(
                         str(v) not in opciones for v in previos
                     )

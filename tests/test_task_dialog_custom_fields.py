@@ -524,8 +524,8 @@ def test_list_previous_value_outside_options_is_preserved(qapp):
     assert dlg.custom_fields == {}
 
 
-def test_multiple_previous_value_partially_representable_serializes_selection(qapp):
-    """Si el usuario deja marcas, se envía la selección y se pierde el no representable."""
+def test_multiple_previous_value_partially_representable_preserves_unknown(qapp):
+    """El valor previo no representable se inyecta como opción y se conserva."""
     redmine = MagicMock()
     dlg = _make_dialog(
         redmine,
@@ -533,7 +533,31 @@ def test_multiple_previous_value_partially_representable_serializes_selection(qa
         task_data=_edit_task_data({8: ["x", "z"]}),
     )
 
-    # "z" no está entre las opciones y no puede marcarse; "x" sí queda marcado.
+    widget = dlg._custom_field_widgets[8]["widget"]
+    # "z" no está en possible_values, pero se inyecta marcado para no perderlo.
+    textos = [
+        widget._list.item(i).text() for i in range(widget._list.count())
+    ]
+    assert "z" in textos
+    assert widget.selected_values() == ["x", "z"]
+    assert dlg.custom_fields == {8: ["x", "z"]}
+
+
+def test_multiple_uncheck_injected_previous_value_removes_it(qapp):
+    """Desmarcar explícitamente el valor inyectado sí lo elimina del payload."""
+    redmine = MagicMock()
+    dlg = _make_dialog(
+        redmine,
+        [_field(8, "Multi", "list", multiple=True, possible_values=["x", "y"])],
+        task_data=_edit_task_data({8: ["x", "z"]}),
+    )
+
+    widget = dlg._custom_field_widgets[8]["widget"]
+    for i in range(widget._list.count()):
+        item = widget._list.item(i)
+        if item.text() == "z":
+            item.setCheckState(Qt.CheckState.Unchecked)
+
     assert dlg.custom_fields == {8: ["x"]}
 
 

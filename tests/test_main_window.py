@@ -14,7 +14,7 @@ from app.dialogs.task_dialog import TaskDialog as RealTaskDialog
 from app.main_window import MainWindow
 from app.services.redmine_client import (
     RedmineError, RedmineValidationError, RedmineProject,
-    RedmineIssue, RedmineJournal,
+    RedmineIssue, RedmineJournal, RedmineClient, RedmineSSOError,
 )
 from app.services.report_generator import (
     ReportGenerator, REPORT_COLUMNS, REPORT_FIELDS, DEFAULT_FIELD_KEYS,
@@ -2359,3 +2359,119 @@ class TestReportCustomFields:
         """Los elementos vacíos de una lista multivalor se ignoran."""
         iss = RedmineIssue(id=1, subject="T", custom_fields={7: ["A", "", "B"]})
         assert main_window._report_field_value(iss, "cf_7") == "A, B"
+
+
+class TestReportCustomFieldsIntegracion:
+    """6.2: el informe usa id/nombre y no repite peticiones por proyecto."""
+
+    @staticmethod
+    def _cliente(membership, admin, *, session_cookie=""):
+        client = RedmineClient(
+            "https://redmine.example.com", "token",
+            session_cookie=session_cookie,
+        )
+        contadores = {"membership": 0, "admin": 0}
+
+        def fake_get(path, params=None):
+            if path == "/projects/1.json":
+                contadores["membership"] += 1
+                if isinstance(membership, Exception):
+                    raise membership
+                return membership
+            if path == "/custom_fields.json":
+                contadores["admin"] += 1
+                if isinstance(admin, Exception):
+                    raise admin
+                return admin
+            raise AssertionError(f"Ruta inesperada: {path}")
+
+        client._get = MagicMock(side_effect=fake_get)
+        return client, contadores
+
+    def test_dos_consultas_del_mismo_proyecto_no_repiten_peticiones(
+        self, main_window
+    ):
+        client, contadores = self._cliente(
+            {"project": {"issue_custom_fields": [
+                {"id": 3, "name": "Cliente"},
+            ]}},
+            {"custom_fields": [{
+                "id": 3,
+                "name": "Cliente (admin)",
+                "customized_type": "issue",
+                "field_format": "string",
+                "possible_values": [],
+            }]},
+        )
+        main_window._redmine = client
+        main_window._projects = [(1, "Proyecto A")]
+
+        primera = main_window._report_custom_fields_for_projects([1])
+        segunda = main_window._report_custom_fields_for_projects([1])
+
+        assert primera == [(3, "Cliente")]
+        assert segunda == [(3, "Cliente")]
+        assert contadores["membership"] == 1
+        assert contadores["admin"] == 1
+
+    def test_fallo_de_html_no_rompe_el_informe(self, main_window):
+        client, _ = self._cliente(
+            {"project": {"issue_custom_fields": [
+                {"id": 3, "name": "Cliente"},
+            ]}},
+            RedmineError("Error HTTP 500", status_code=500),
+            session_cookie="session=x",
+        )
+        client._get_text = MagicMock(
+            side_effect=RedmineSSOError("Redireccion inesperada [302] a /login")
+        )
+        main_window._redmine = client
+        main_window._projects = [(1, "Proyecto A")]
+
+        assert main_window._report_custom_fields_for_projects([1]) == [
+            (3, "Cliente")
+        ]
+        client._get_text.assert_called_once_with("/projects/1/issues/new")
+
+
+class TestReportCustomFieldsNoJSON:
+    """7.2: un 200 no-JSON en definiciones no rompe el informe ODS."""
+
+    def test_respuesta_200_no_json_en_definiciones_no_rompe_el_informe(
+        self, main_window
+    ):
+        client = RedmineClient("https://redmine.example.com", "token")
+
+        class _Resp:
+            def __init__(self, payload=None, error=None):
+                self.status_code = 200
+                self.headers = {}
+                self.text = "<html><body>SSO</body></html>"
+                self._payload = payload
+                self._error = error
+
+            def json(self):
+                if self._error is not None:
+                    raise self._error
+                return self._payload
+
+        def fake_get(path, params=None):
+            if path == "/projects/1.json":
+                return _Resp(payload={
+                    "project": {"issue_custom_fields": [
+                        {"id": 3, "name": "Cliente"},
+                    ]}
+                })
+            if path == "/custom_fields.json":
+                return _Resp(error=ValueError("Expecting value: line 1 column 1"))
+            raise AssertionError(f"Ruta inesperada: {path}")
+
+        mock_http = MagicMock()
+        mock_http.get.side_effect = fake_get
+        client._client = mock_http
+        main_window._redmine = client
+        main_window._projects = [(1, "Proyecto A")]
+
+        assert main_window._report_custom_fields_for_projects([1]) == [
+            (3, "Cliente")
+        ]

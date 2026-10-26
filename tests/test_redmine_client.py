@@ -1,10 +1,12 @@
 from unittest.mock import MagicMock, patch, mock_open
 
+import httpx
 import pytest
 
 from app.services.redmine_client import (
     RedmineClient, RedmineAttachment, RedmineIssue, RedmineJournal,
     RedmineValidationError, RedmineError, RedmineProject,
+    RedmineAuthError, RedmineConnectionError, RedmineSSOError,
 )
 
 
@@ -1146,3 +1148,322 @@ class TestGetProjectTrackers:
         client._get.side_effect = RedmineError("404")
         with pytest.raises(RedmineError):
             client.get_project_trackers(999)
+
+
+class TestRedmineErrorStatusCode:
+    """2.1: RedmineError expone el código HTTP que originó el error."""
+
+    def test_error_expone_status_code_por_defecto_y_explicito(self):
+        """Sin código queda None; con código explícito se conserva."""
+        assert RedmineError("x").status_code is None
+        assert RedmineError("x", status_code=403).status_code == 403
+
+
+class TestGetStatusCode:
+    """2.3: `_get` adjunta el código HTTP a las excepciones que lanza."""
+
+    @pytest.fixture
+    def client(self):
+        return RedmineClient("https://redmine.example.com", "token")
+
+    @staticmethod
+    def _mock_response(client, status_code, payload=None):
+        mock_resp = MagicMock()
+        mock_resp.status_code = status_code
+        mock_resp.headers = {}
+        mock_resp.json.return_value = payload if payload is not None else {}
+        mock_http_client = MagicMock()
+        mock_http_client.get.return_value = mock_resp
+        client._client = mock_http_client
+        return mock_http_client
+
+    def test_get_403_lanza_auth_error_con_status_code(self, client):
+        """HTTP 403: RedmineAuthError con el mensaje actual y status_code."""
+        self._mock_response(client, 403)
+        with pytest.raises(RedmineAuthError) as exc_info:
+            client._get("/projects.json")
+        assert str(exc_info.value) == "Acceso denegado (HTTP 403)"
+        assert exc_info.value.status_code == 403
+
+    def test_get_500_lanza_redmine_error_con_status_code(self, client):
+        """HTTP 500: RedmineError con detalle del cuerpo y status_code."""
+        self._mock_response(client, 500, {"errors": ["boom"]})
+        with pytest.raises(RedmineError) as exc_info:
+            client._get("/projects.json")
+        assert str(exc_info.value) == "Error HTTP 500 en /projects.json: boom"
+        assert exc_info.value.status_code == 500
+
+
+class TestGetText:
+    """2.5 y ss.: `_get_text` devuelve el cuerpo HTML y mapea errores."""
+
+    @pytest.fixture
+    def client(self):
+        return RedmineClient("https://redmine.example.com", "token")
+
+    @staticmethod
+    def _mock_response(client, status_code=200, text="", headers=None):
+        mock_resp = MagicMock()
+        mock_resp.status_code = status_code
+        mock_resp.headers = headers or {}
+        mock_resp.text = text
+        mock_resp.json.return_value = {}
+        mock_http_client = MagicMock()
+        mock_http_client.get.return_value = mock_resp
+        client._client = mock_http_client
+        return mock_http_client
+
+    def test_get_text_devuelve_el_cuerpo_html(self, client):
+        """_get_text devuelve resp.text tal cual, sin parsear JSON."""
+        cuerpo = "<html><body>hola</body></html>"
+        mock_http_client = self._mock_response(client, 200, text=cuerpo)
+
+        assert client._get_text("/projects/1/issues/new") == cuerpo
+        mock_http_client.get.assert_called_once_with(
+            "/projects/1/issues/new", params={}
+        )
+
+    def test_get_text_403_lanza_auth_error_con_status_code(self, client):
+        """HTTP 403 en HTML: RedmineAuthError con status_code."""
+        self._mock_response(client, 403)
+        with pytest.raises(RedmineAuthError) as exc_info:
+            client._get_text("/projects/1/issues/new")
+        assert str(exc_info.value) == "Acceso denegado (HTTP 403)"
+        assert exc_info.value.status_code == 403
+
+    def test_get_text_404_lanza_redmine_error(self, client):
+        """HTTP 404 en HTML: RedmineError con el path y status_code."""
+        self._mock_response(client, 404)
+        with pytest.raises(RedmineError) as exc_info:
+            client._get_text("/projects/1/issues/new")
+        assert str(exc_info.value) == (
+            "Recurso no encontrado: /projects/1/issues/new"
+        )
+        assert exc_info.value.status_code == 404
+
+    def test_get_text_500_lanza_redmine_error_con_status_code(self, client):
+        """HTTP 500 en HTML: RedmineError con status_code."""
+        self._mock_response(client, 500)
+        with pytest.raises(RedmineError) as exc_info:
+            client._get_text("/projects/1/issues/new")
+        assert "Error HTTP 500 en /projects/1/issues/new" in str(exc_info.value)
+        assert exc_info.value.status_code == 500
+
+    def test_get_text_timeout_lanza_connection_error(self, client):
+        """Un timeout de httpx se traduce a RedmineConnectionError."""
+        mock_http_client = MagicMock()
+        mock_http_client.get.side_effect = httpx.TimeoutException("timeout")
+        client._client = mock_http_client
+
+        with pytest.raises(RedmineConnectionError) as exc_info:
+            client._get_text("/projects/1/issues/new")
+        assert str(exc_info.value) == "Timeout al conectar al servidor Redmine"
+
+    def test_get_text_connect_error_lanza_connection_error(self, client):
+        """Un fallo de conexión se traduce a RedmineConnectionError."""
+        mock_http_client = MagicMock()
+        mock_http_client.get.side_effect = httpx.ConnectError("boom")
+        client._client = mock_http_client
+
+        with pytest.raises(RedmineConnectionError) as exc_info:
+            client._get_text("/projects/1/issues/new")
+        assert "No se pudo conectar al servidor Redmine" in str(exc_info.value)
+
+    def test_get_text_redireccion_a_login_lanza_sso_error(self, client):
+        """Una redirección a login se convierte en RedmineSSOError."""
+        self._mock_response(client, 302, headers={"Location": "/login"})
+
+        with pytest.raises(RedmineSSOError) as exc_info:
+            client._get_text("/projects/1/issues/new")
+        assert "SSO" in str(exc_info.value)
+
+
+class TestGetCaracterizacion:
+    """2.13: blindaje de la retrocompatibilidad de `_get`."""
+
+    @pytest.fixture
+    def client(self):
+        return RedmineClient("https://redmine.example.com", "token")
+
+    @staticmethod
+    def _respond(client, status_code, payload=None):
+        mock_resp = MagicMock()
+        mock_resp.status_code = status_code
+        mock_resp.headers = {}
+        mock_resp.json.return_value = payload if payload is not None else {}
+        mock_http_client = MagicMock()
+        mock_http_client.get.return_value = mock_resp
+        client._client = mock_http_client
+
+    def test_get_sigue_parseando_json_y_mensajes_401_403_intactos(self, client):
+        """Un 200 sigue devolviendo JSON y 401/403 conservan sus mensajes."""
+        self._respond(client, 200, {"ok": True})
+        assert client._get("/issues.json") == {"ok": True}
+
+        self._respond(client, 401)
+        with pytest.raises(RedmineAuthError) as exc_401:
+            client._get("/issues.json")
+        assert str(exc_401.value) == "API key no válida (HTTP 401)"
+
+        self._respond(client, 403)
+        with pytest.raises(RedmineAuthError) as exc_403:
+            client._get("/issues.json")
+        assert str(exc_403.value) == "Acceso denegado (HTTP 403)"
+
+
+class TestGetRespuestaNoJSON:
+    """7.2: un 200 con cuerpo no-JSON no debe escapar como ValueError."""
+
+    @pytest.fixture
+    def client(self):
+        return RedmineClient("https://redmine.example.com", "token")
+
+    @staticmethod
+    def _respond(client, text="", json_error=None, payload=None):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {}
+        mock_resp.text = text
+        if json_error is not None:
+            mock_resp.json.side_effect = json_error
+        else:
+            mock_resp.json.return_value = payload
+        mock_http = MagicMock()
+        mock_http.get.return_value = mock_resp
+        client._client = mock_http
+
+    def test_get_200_con_html_lanza_redmine_error(self, client):
+        self._respond(
+            client,
+            text="<html><body>SSO</body></html>",
+            json_error=ValueError("Expecting value: line 1 column 1"),
+        )
+
+        with pytest.raises(RedmineError) as exc_info:
+            client._get("/custom_fields.json")
+
+        assert "no es JSON" in str(exc_info.value)
+        assert exc_info.value.status_code == 200
+
+    def test_get_200_json_valido_sigue_devolviendo_dict(self, client):
+        self._respond(client, payload={"ok": True})
+
+        assert client._get("/custom_fields.json") == {"ok": True}
+
+
+class TestRedirectLocation:
+    """W1: `RedmineSSOError` conserva el header Location de la redirección."""
+
+    def test_sso_error_guarda_location_retrocompatible(self):
+        assert RedmineSSOError("x").location == ""
+        assert RedmineSSOError("x", location="/login").location == "/login"
+
+    def test_get_text_redireccion_propaga_location(self):
+        client = RedmineClient("https://redmine.example.com", "token")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 302
+        mock_resp.headers = {"Location": "/sso/login"}
+        mock_resp.text = ""
+        mock_http = MagicMock()
+        mock_http.get.return_value = mock_resp
+        client._client = mock_http
+
+        with pytest.raises(RedmineSSOError) as exc_info:
+            client._get_text("/projects/1/issues/new")
+
+        assert exc_info.value.location == "/sso/login"
+
+
+class TestTransportErrorsGenericos:
+    """8.10: cualquier httpx.HTTPError se mapea a RedmineConnectionError."""
+
+    @pytest.fixture
+    def client(self):
+        return RedmineClient("https://redmine.example.com", "token")
+
+    def test_get_http_error_generico_lanza_connection_error(self, client):
+        mock_http = MagicMock()
+        mock_http.get.side_effect = httpx.HTTPError("boom")
+        client._client = mock_http
+
+        with pytest.raises(RedmineConnectionError) as exc_info:
+            client._get("/projects.json")
+
+        assert "transporte" in str(exc_info.value).lower()
+
+    def test_get_text_http_error_generico_lanza_connection_error(self, client):
+        mock_http = MagicMock()
+        mock_http.get.side_effect = httpx.HTTPError("boom")
+        client._client = mock_http
+
+        with pytest.raises(RedmineConnectionError) as exc_info:
+            client._get_text("/projects/1/issues/new")
+
+        assert "transporte" in str(exc_info.value).lower()
+
+
+class TestRefactorErroresHTTP:
+    """8.11: caracterización de mensajes antes del refactor compartido."""
+
+    @pytest.fixture
+    def client(self):
+        return RedmineClient("https://redmine.example.com", "token")
+
+    @staticmethod
+    def _mock_resp(status_code, payload=None):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.headers = {}
+        resp.text = ""
+        resp.json.return_value = payload if payload is not None else {}
+        return resp
+
+    def test_post_422_conserva_mensaje_y_errores(self, client):
+        mock_http = MagicMock()
+        mock_http.post.return_value = self._mock_resp(
+            422, {"errors": ["Subject is required"]}
+        )
+        client._client = mock_http
+
+        with pytest.raises(RedmineValidationError) as exc_info:
+            client._post("/issues.json", {"issue": {}})
+
+        assert str(exc_info.value) == (
+            "Error de validación al crear/actualizar en /issues.json"
+        )
+        assert exc_info.value.errors == ["Subject is required"]
+
+    def test_put_422_conserva_mensaje_y_errores(self, client):
+        mock_http = MagicMock()
+        mock_http.put.return_value = self._mock_resp(
+            422, {"errors": ["Status is invalid"]}
+        )
+        client._client = mock_http
+
+        with pytest.raises(RedmineValidationError) as exc_info:
+            client._put("/issues/1.json", {"issue": {}})
+
+        assert str(exc_info.value) == (
+            "Error de validación al actualizar en /issues/1.json"
+        )
+        assert exc_info.value.errors == ["Status is invalid"]
+
+    def test_post_401_conserva_mensaje(self, client):
+        mock_http = MagicMock()
+        mock_http.post.return_value = self._mock_resp(401)
+        client._client = mock_http
+
+        with pytest.raises(RedmineAuthError) as exc_info:
+            client._post("/issues.json", {"issue": {}})
+
+        assert str(exc_info.value) == "API key no válida (HTTP 401)"
+
+    def test_delete_404_conserva_mensaje(self, client):
+        mock_http = MagicMock()
+        mock_http.delete.return_value = self._mock_resp(404)
+        client._client = mock_http
+
+        with pytest.raises(RedmineError) as exc_info:
+            client._delete("/issues/999.json")
+
+        assert str(exc_info.value) == "Recurso no encontrado: /issues/999.json"

@@ -60,6 +60,11 @@ class SettingsDialog(QDialog):
             "cookie1=valor1; cookie2=valor2; _redmine_session=..."
         )
         self._cookie_edit.setMaximumHeight(55)
+        self._cookie_edit.setToolTip(
+            "La Cookie de sesión permite resolver los campos personalizados "
+            "(listas y opciones) cuando la API key no tiene permisos de "
+            "administrador."
+        )
         form.addRow("Cookie:", self._cookie_edit)
 
         self._headers_edit = QPlainTextEdit()
@@ -73,9 +78,12 @@ class SettingsDialog(QDialog):
             "API key: Mi cuenta -> Mostrar API key.\n"
             "Cookie: F12 -> Network -> recarga -> peticion a Redmine ->\n"
             "        Request Headers -> copia el valor COMPLETO de 'Cookie'.\n"
+            "        La Cookie permite resolver los campos personalizados\n"
+            "        (listas y opciones) si la API key no es de administrador.\n"
             "Headers extra: anade otros headers que necesite el SSO (uno por linea,\n"
             "        formato 'Clave: Valor')."
         )
+        self._redmine_info_label = info
         info.setWordWrap(True)
         info.setStyleSheet("color: gray; font-size: 10pt;")
         form.addRow(info)

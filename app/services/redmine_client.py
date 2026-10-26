@@ -1,11 +1,13 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
+import copy
 import httpx
 
 from app.utils.constants import REDMINE_REQUEST_TIMEOUT, REDMINE_PAGE_LIMIT
 from app.utils.projects import build_project_full_names
+from app.services.custom_field_definitions import parse_issue_form_custom_fields
 
 import logging
 
@@ -146,6 +148,8 @@ class RedmineCustomField:
     default_value: str = ""
     visible: bool = True
     editable: bool = True
+    definition_source: str = ""
+    degraded_reason: str = ""
 
 
 @dataclass
@@ -215,7 +219,15 @@ class RedmineAttachment:
 
 
 class RedmineError(Exception):
-    pass
+    """Error base de la API de Redmine.
+
+    Attributes:
+        status_code: Código HTTP que originó el error, si está disponible.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class RedmineAuthError(RedmineError):
@@ -227,7 +239,15 @@ class RedmineConnectionError(RedmineError):
 
 
 class RedmineSSOError(RedmineError):
-    pass
+    """Redirección del servidor que impide completar la petición.
+
+    Attributes:
+        location: Valor del header `Location`, si está disponible.
+    """
+
+    def __init__(self, message: str, location: str = ""):
+        super().__init__(message)
+        self.location = location
 
 
 class RedmineValidationError(RedmineError):
@@ -243,6 +263,9 @@ class RedmineValidationError(RedmineError):
 
 
 class RedmineClient:
+    _CUSTOM_FIELDS_PAGE_LIMIT = 100
+    _CUSTOM_FIELDS_MAX_PAGES = 20
+
     def __init__(self, base_url: str, api_key: str, proxy_url: str | None = None,
                  session_cookie: str = "", extra_headers: dict[str, str] | None = None):
         url = base_url.strip()
@@ -255,6 +278,14 @@ class RedmineClient:
         self._extra_headers = extra_headers or {}
         self._client: httpx.Client | None = None
         self._cached_user_id: int | None = None
+        # Caché de definiciones de campos personalizados (D6). Vive en la
+        # instancia: un cliente nuevo no comparte nada con el anterior.
+        self._project_custom_fields: dict[int, list[RedmineCustomField]] = {}
+        self._custom_field_definitions: dict[int, RedmineCustomField] | None = None
+        self._custom_field_definitions_error: str | None = None
+        self._project_form_definitions: dict[int, dict[int, RedmineCustomField]] = {}
+        self._project_form_errors: dict[int, str] = {}
+        self._issue_form_auth_failure: str | None = None
 
     def _build_client(self) -> httpx.Client:
         headers = {
@@ -300,51 +331,108 @@ class RedmineClient:
                          getattr(resp, "status_code", "?"), e)
             return None
 
+    def _raise_for_status(
+        self,
+        resp,
+        path: str,
+        validation_message: str | None = None,
+    ) -> None:
+        """Lanza la excepción adecuada según el código HTTP de la respuesta.
+
+        Replica el mapeo histórico de `_get` (401/403 → RedmineAuthError,
+        404 → RedmineError, resto ≥400 → RedmineError con detalle de
+        `errors`) y adjunta `status_code` a la excepción.
+
+        Args:
+            resp: Respuesta HTTP.
+            path: Ruta solicitada, usada en los mensajes.
+            validation_message: Si se indica, un HTTP 422 se convierte en
+                `RedmineValidationError` con ese mensaje y los errores
+                parseados (comportamiento de `_post`/`_put`).
+        """
+        if resp.status_code == 401:
+            raise RedmineAuthError("API key no válida (HTTP 401)", status_code=401)
+        if resp.status_code == 403:
+            raise RedmineAuthError("Acceso denegado (HTTP 403)", status_code=403)
+        if resp.status_code == 404:
+            raise RedmineError(f"Recurso no encontrado: {path}", status_code=404)
+        if resp.status_code == 422 and validation_message is not None:
+            errors = self._extract_validation_errors(resp)
+            raise RedmineValidationError(validation_message, errors)
+        if resp.status_code >= 400:
+            body = self._safe_json(resp)
+            detail = ""
+            if body and isinstance(body, dict):
+                errors = body.get("errors", [])
+                if errors:
+                    detail = ": " + "; ".join(str(e) for e in errors)
+            raise RedmineError(
+                f"Error HTTP {resp.status_code} en {path}{detail}",
+                status_code=resp.status_code,
+            )
+
+    def _parse_json(self, resp, path: str) -> dict:
+        """Parsea el JSON de una respuesta y convierte un cuerpo inválido.
+
+        Un 200 con HTML (SSO, proxy) no debe escapar como `ValueError`: se
+        convierte en `RedmineError` para que la cascada de campos personalizados
+        pueda degradar al formulario HTML y el informe ODS no se rompa.
+        """
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise RedmineError(
+                f"Respuesta no válida de Redmine en '{path}': el cuerpo no es JSON",
+                status_code=getattr(resp, "status_code", None),
+            ) from exc
+
     def _get(self, path: str, params: dict | None = None) -> dict:
         try:
             resp = self.client.get(path, params=params or {})
             self._check_redirect(resp, path)
-            if resp.status_code == 401:
-                raise RedmineAuthError("API key no válida (HTTP 401)")
-            if resp.status_code == 403:
-                raise RedmineAuthError("Acceso denegado (HTTP 403)")
-            if resp.status_code == 404:
-                raise RedmineError(f"Recurso no encontrado: {path}")
-            if resp.status_code >= 400:
-                body = self._safe_json(resp)
-                detail = ""
-                if body and isinstance(body, dict):
-                    errors = body.get("errors", [])
-                    if errors:
-                        detail = ": " + "; ".join(str(e) for e in errors)
-                raise RedmineError(f"Error HTTP {resp.status_code} en {path}{detail}")
-            return resp.json()
+            self._raise_for_status(resp, path)
+            return self._parse_json(resp, path)
         except httpx.ConnectError as e:
             raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
         except httpx.TimeoutException:
             raise RedmineConnectionError("Timeout al conectar al servidor Redmine")
+        except httpx.HTTPError as e:
+            raise RedmineConnectionError(
+                f"Error de transporte con el servidor Redmine: {e}"
+            )
+
+    def _get_text(self, path: str, params: dict | None = None) -> str:
+        """Obtiene el cuerpo de una respuesta no JSON (por ejemplo, HTML).
+
+        Comparte el tratamiento de redirecciones y errores HTTP de `_get`,
+        pero devuelve `resp.text` en lugar de parsear JSON.
+        """
+        try:
+            resp = self.client.get(path, params=params or {})
+            self._check_redirect(resp, path)
+            self._raise_for_status(resp, path)
+            return resp.text
+        except httpx.ConnectError as e:
+            raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
+        except httpx.TimeoutException:
+            raise RedmineConnectionError("Timeout al conectar al servidor Redmine")
+        except httpx.HTTPError as e:
+            raise RedmineConnectionError(
+                f"Error de transporte con el servidor Redmine: {e}"
+            )
 
     def _post(self, path: str, data: dict) -> dict:
         resp = None
         try:
             resp = self.client.post(path, json=data)
             self._check_redirect(resp, path)
-            if resp.status_code == 401:
-                raise RedmineAuthError("API key no válida (HTTP 401)")
-            if resp.status_code == 422:
-                errors = self._extract_validation_errors(resp)
-                raise RedmineValidationError(
-                    f"Error de validación al crear/actualizar en {path}",
-                    errors,
-                )
-            if resp.status_code >= 400:
-                body = self._safe_json(resp)
-                detail = ""
-                if body and isinstance(body, dict):
-                    errors = body.get("errors", [])
-                    if errors:
-                        detail = ": " + "; ".join(str(e) for e in errors)
-                raise RedmineError(f"Error HTTP {resp.status_code} en {path}{detail}")
+            self._raise_for_status(
+                resp,
+                path,
+                validation_message=(
+                    f"Error de validación al crear/actualizar en {path}"
+                ),
+            )
         except httpx.ConnectError as e:
             raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
         except httpx.TimeoutException:
@@ -361,22 +449,13 @@ class RedmineClient:
         try:
             resp = self.client.put(path, json=data)
             self._check_redirect(resp, path)
-            if resp.status_code == 401:
-                raise RedmineAuthError("API key no válida (HTTP 401)")
-            if resp.status_code == 422:
-                errors = self._extract_validation_errors(resp)
-                raise RedmineValidationError(
-                    f"Error de validación al actualizar en {path}",
-                    errors,
-                )
-            if resp.status_code >= 400:
-                body = self._safe_json(resp)
-                detail = ""
-                if body and isinstance(body, dict):
-                    errors = body.get("errors", [])
-                    if errors:
-                        detail = ": " + "; ".join(str(e) for e in errors)
-                raise RedmineError(f"Error HTTP {resp.status_code} en {path}{detail}")
+            self._raise_for_status(
+                resp,
+                path,
+                validation_message=(
+                    f"Error de validación al actualizar en {path}"
+                ),
+            )
         except httpx.ConnectError as e:
             raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
         except httpx.TimeoutException:
@@ -392,11 +471,7 @@ class RedmineClient:
         try:
             resp = self.client.delete(path)
             self._check_redirect(resp, path)
-            if resp.status_code == 401:
-                raise RedmineAuthError("API key no válida (HTTP 401)")
-            if resp.status_code == 404:
-                raise RedmineError(f"Recurso no encontrado: {path}")
-            resp.raise_for_status()
+            self._raise_for_status(resp, path)
             return {}
         except httpx.ConnectError as e:
             raise RedmineConnectionError(f"No se pudo conectar al servidor Redmine: {e}")
@@ -405,15 +480,17 @@ class RedmineClient:
 
     def _check_redirect(self, resp, path: str):
         if resp.status_code in (301, 302, 303, 307, 308):
-            location = resp.headers.get("Location", "")
+            location = resp.headers.get("Location", "") or ""
             if "login" in location.lower() or "sso" in location.lower() or "auth" in location.lower():
                 raise RedmineSSOError(
                     "El servidor Redmine esta protegido por un portal de autenticacion (SSO).\n\n"
                     "La API key no es suficiente. El administrador debe configurar\n"
-                    "Redmine para permitir acceso API sin pasar por el SSO."
+                    "Redmine para permitir acceso API sin pasar por el SSO.",
+                    location=location,
                 )
             raise RedmineSSOError(
-                f"Redireccion inesperada [{resp.status_code}] en '{path}'."
+                f"Redireccion inesperada [{resp.status_code}] en '{path}'.",
+                location=location,
             )
 
     def test_connection(self) -> bool:
@@ -899,28 +976,373 @@ class RedmineClient:
             ))
         return categories
 
+    def _describe_error(self, exc: RedmineError) -> str:
+        """Motivo legible y sin secretos de un fallo de la API de Redmine."""
+        status = getattr(exc, "status_code", None)
+        if isinstance(exc, RedmineConnectionError):
+            return "no se pudo conectar con Redmine"
+        if isinstance(exc, RedmineSSOError):
+            return "redirección de autenticación (SSO)"
+        if status == 401:
+            return "la API key no es válida (HTTP 401)"
+        if status == 403:
+            return "la API key no tiene permisos de administrador (HTTP 403)"
+        if status == 404:
+            return "las definiciones no están disponibles (HTTP 404)"
+        if status is not None:
+            return f"error HTTP {status} al consultar las definiciones"
+        return str(exc)
+
+    def _fetch_project_custom_field_stubs(self, project_id: int) -> list[tuple[int, str]]:
+        """Obtiene solo id, nombre y orden de la pertenencia al proyecto (D2).
+
+        El `include=issue_custom_fields` de Redmine real no devuelve la
+        definición completa: cualquier clave extra se ignora deliberadamente.
+        """
+        raw = self._get(
+            f"/projects/{project_id}.json",
+            params={"include": "issue_custom_fields"},
+        )
+        if not isinstance(raw, dict):
+            raise RedmineError(
+                "Respuesta inválida al consultar los campos del proyecto"
+            )
+        project = raw.get("project", {}) or {}
+        if not isinstance(project, dict):
+            raise RedmineError(
+                "Respuesta inválida al consultar los campos del proyecto"
+            )
+        stubs: list[tuple[int, str]] = []
+        for cf in project.get("issue_custom_fields", []) or []:
+            if not isinstance(cf, dict) or "id" not in cf:
+                continue
+            try:
+                cf_id = int(cf["id"])
+            except (TypeError, ValueError):
+                raise RedmineError(
+                    "Identificador de campo personalizado inválido en el proyecto"
+                )
+            stubs.append((cf_id, cf.get("name", "")))
+        return stubs
+
+    @staticmethod
+    def _normalize_possible_values(raw_values: list | None) -> list[str]:
+        """Normaliza `possible_values` en objetos {value,label} o cadenas."""
+        if not isinstance(raw_values, list):
+            return []
+        normalizados: list[str] = []
+        for item in raw_values or []:
+            if isinstance(item, dict):
+                valor = item.get("value")
+                if valor is None:
+                    valor = item.get("label", "")
+            else:
+                valor = item
+            normalizados.append("" if valor is None else str(valor))
+        return normalizados
+
+    def _admin_custom_field_from_json(self, cf: dict) -> RedmineCustomField:
+        """Construye la definición completa desde `/custom_fields.json`."""
+        return RedmineCustomField(
+            id=int(cf["id"]),
+            name=cf.get("name", ""),
+            field_format=cf.get("field_format", "") or "",
+            is_required=bool(cf.get("is_required", False)),
+            multiple=bool(cf.get("multiple", False)),
+            possible_values=self._normalize_possible_values(
+                cf.get("possible_values")
+            ),
+            default_value=cf.get("default_value", "") or "",
+            visible=cf.get("visible", True),
+            editable=cf.get("editable", True),
+            definition_source="admin",
+        )
+
+    def _fetch_custom_field_definitions(self) -> dict[int, RedmineCustomField]:
+        """Consulta `/custom_fields.json` y mapea las definiciones por id.
+
+        Paginación defensiva (D1): si la respuesta no trae `total_count`
+        numérico se hace una sola petición sin `limit`/`offset`. Si lo trae y
+        supera lo acumulado, se piden páginas hasta alcanzarlo o hasta recibir
+        una página vacía, con un tope de 20 peticiones. Un endpoint que ignore
+        `limit`/`offset` no provoca un bucle infinito: el tope lo corta.
+        """
+        definitions: dict[int, RedmineCustomField] = {}
+        total_count: int | None = None
+        offset = 0
+
+        for _ in range(self._CUSTOM_FIELDS_MAX_PAGES):
+            if offset == 0:
+                raw = self._get("/custom_fields.json")
+            else:
+                raw = self._get(
+                    "/custom_fields.json",
+                    params={
+                        "limit": self._CUSTOM_FIELDS_PAGE_LIMIT,
+                        "offset": offset,
+                    },
+                )
+            if not isinstance(raw, dict):
+                raise RedmineError("Respuesta inválida de /custom_fields.json")
+            pagina = raw.get("custom_fields", []) or []
+            if not isinstance(pagina, list):
+                raise RedmineError("Respuesta inválida de /custom_fields.json")
+
+            for cf in pagina:
+                if not isinstance(cf, dict) or "id" not in cf:
+                    continue
+                if cf.get("customized_type") != "issue":
+                    continue
+                try:
+                    cf_id = int(cf["id"])
+                except (TypeError, ValueError):
+                    continue
+                definitions[cf_id] = self._admin_custom_field_from_json(cf)
+
+            if total_count is None:
+                raw_total = raw.get("total_count")
+                if isinstance(raw_total, (int, float)) and not isinstance(
+                    raw_total, bool
+                ):
+                    total_count = int(raw_total)
+                else:
+                    break
+
+            offset += len(pagina)
+            if not pagina or offset >= total_count:
+                break
+
+        return definitions
+
+    def _load_admin_definitions(
+        self,
+    ) -> tuple[dict[int, RedmineCustomField], str | None]:
+        """Devuelve las definiciones de administrador y memoriza el fallo."""
+        if self._custom_field_definitions is not None:
+            return self._custom_field_definitions, None
+        if self._custom_field_definitions_error is not None:
+            return {}, self._custom_field_definitions_error
+        try:
+            definitions = self._fetch_custom_field_definitions()
+        except RedmineError as exc:
+            self._custom_field_definitions_error = self._describe_error(exc)
+            return {}, self._custom_field_definitions_error
+        self._custom_field_definitions = definitions
+        return definitions, None
+
+    @staticmethod
+    def _looks_like_login_page(html: str) -> bool:
+        """Heurística mínima para identificar una página de login de Redmine."""
+        lowered = html.lower()
+        return (
+            "login-form" in lowered
+            or 'name="username"' in lowered
+            or "name='username'" in lowered
+        )
+
+    @staticmethod
+    def _is_authentication_redirect(exc: RedmineSSOError) -> bool:
+        """Indica si una redirección apunta a un flujo de autenticación.
+
+        Solo estas redirecciones justifican la caché negativa global del
+        formulario HTML. Una redirección benigna (trailing slash, canónica,
+        idioma) debe degradar únicamente el proyecto afectado.
+        """
+        location = (getattr(exc, "location", "") or "").lower()
+        if location:
+            return any(
+                token in location
+                for token in ("login", "sso", "saml", "oauth", "/auth")
+            )
+        message = str(exc).lower()
+        return any(
+            token in message
+            for token in ("login", "sso", "autenticacion", "authentication")
+        )
+
+    def _describe_html_error(self, exc: RedmineError) -> str:
+        """Motivo legible de un fallo al pedir el formulario HTML."""
+        status = getattr(exc, "status_code", None)
+        if isinstance(exc, RedmineSSOError):
+            if self._is_authentication_redirect(exc):
+                return "la Cookie de sesión no es válida o ha caducado"
+            return (
+                "el servidor redirigió el formulario a otra ubicación "
+                "(redirección no autenticativa)"
+            )
+        if isinstance(exc, RedmineAuthError):
+            return "la Cookie de sesión no es válida o ha caducado"
+        if isinstance(exc, RedmineConnectionError):
+            return "no se pudo conectar con Redmine para obtener el formulario"
+        if status == 404:
+            return "el formulario de nueva incidencia no existe (HTTP 404)"
+        if status is not None:
+            return (
+                f"error HTTP {status} al obtener el formulario de nueva incidencia"
+            )
+        return str(exc)
+
+    def _get_project_issue_form_definitions(
+        self, project_id: int
+    ) -> dict[int, RedmineCustomField]:
+        """Obtiene y cachea las definiciones parciales del formulario HTML.
+
+        Solo resuelve `field_format`, `multiple` y `possible_values`; el resto
+        de la definición conserva sus valores por defecto (D1/D5).
+        """
+        if project_id in self._project_form_definitions:
+            return self._project_form_definitions[project_id]
+        if self._issue_form_auth_failure is not None:
+            self._project_form_definitions[project_id] = {}
+            self._project_form_errors[project_id] = self._issue_form_auth_failure
+            return {}
+
+        try:
+            html = self._get_text(f"/projects/{project_id}/issues/new")
+        except RedmineError as exc:
+            motivo = self._describe_html_error(exc)
+            self._project_form_definitions[project_id] = {}
+            self._project_form_errors[project_id] = motivo
+            if isinstance(exc, RedmineAuthError):
+                self._issue_form_auth_failure = motivo
+            elif isinstance(exc, RedmineSSOError) and self._is_authentication_redirect(exc):
+                self._issue_form_auth_failure = motivo
+            return {}
+
+        parsed = parse_issue_form_custom_fields(html)
+        if not parsed and self._looks_like_login_page(html):
+            motivo = "la Cookie de sesión no es válida (página de login)"
+            self._issue_form_auth_failure = motivo
+            self._project_form_definitions[project_id] = {}
+            self._project_form_errors[project_id] = motivo
+            return {}
+
+        definitions = {
+            cf_id: RedmineCustomField(
+                id=cf_id,
+                name="",
+                field_format=parsed_field.field_format,
+                multiple=parsed_field.multiple,
+                possible_values=list(parsed_field.possible_values),
+                definition_source="html",
+            )
+            for cf_id, parsed_field in parsed.items()
+        }
+        self._project_form_definitions[project_id] = definitions
+        if not definitions:
+            self._project_form_errors[project_id] = (
+                "el formulario no contiene controles de campos personalizados"
+            )
+        return definitions
+
+    def _degradation_reason(self, project_id: int, admin_error: str | None) -> str:
+        """Construye un motivo legible para un campo sin definición."""
+        motivos: list[str] = []
+        if admin_error:
+            motivos.append(
+                f"definiciones de administrador no disponibles: {admin_error}"
+            )
+        else:
+            motivos.append(
+                "la definición de administrador no contiene este campo"
+            )
+        if not self._session_cookie:
+            motivos.append("no hay Cookie de sesión configurada")
+        else:
+            html_error = self._project_form_errors.get(project_id)
+            if html_error:
+                motivos.append(html_error)
+            else:
+                motivos.append(
+                    "el campo no aparece en el formulario de nueva incidencia "
+                    "(puede ser de solo lectura o de otro tracker)"
+                )
+        return "; ".join(motivos)
+
+    def _degraded_custom_field(
+        self, project_id: int, cf_id: int, name: str, reason: str
+    ) -> RedmineCustomField:
+        """Devuelve el campo en modo texto libre y registra el diagnóstico."""
+        logger.warning(
+            "Campo personalizado sin definición: proyecto=%s campo=%s "
+            "nombre=%r motivo=%s",
+            project_id,
+            cf_id,
+            name,
+            reason,
+        )
+        return RedmineCustomField(
+            id=cf_id,
+            name=name,
+            field_format="",
+            is_required=False,
+            multiple=False,
+            possible_values=[],
+            default_value="",
+            visible=True,
+            editable=True,
+            definition_source="none",
+            degraded_reason=reason,
+        )
+
+    def clear_custom_field_cache(self) -> None:
+        """Vacía las cachés de definiciones y el fallo global del HTML.
+
+        Se expone para tests y para un futuro refresco manual. La caché vive
+        en la instancia, por lo que un cliente nuevo tampoco reutiliza nada.
+        """
+        self._project_custom_fields.clear()
+        self._custom_field_definitions = None
+        self._custom_field_definitions_error = None
+        self._project_form_definitions.clear()
+        self._project_form_errors.clear()
+        self._issue_form_auth_failure = None
+
     def get_project_custom_fields(self, project_id: int) -> list[RedmineCustomField]:
         """Obtiene los campos personalizados definidos en un proyecto.
 
-        Realiza GET /projects/{id}.json?include=issue_custom_fields y mapea
-        cada entrada de `issue_custom_fields` a un RedmineCustomField.
+        La pertenencia al proyecto aporta solo id, nombre y orden. La
+        definición se resuelve primero con `/custom_fields.json`; si no está
+        disponible, se completa con el formulario HTML (nivel 3).
         """
-        raw = self._get(f"/projects/{project_id}.json", params={"include": "issue_custom_fields"})
-        project = raw.get("project", {})
+        if project_id in self._project_custom_fields:
+            return copy.deepcopy(self._project_custom_fields[project_id])
+
+        stubs = self._fetch_project_custom_field_stubs(project_id)
+        if not stubs:
+            self._project_custom_fields[project_id] = []
+            return []
+
+        definitions, admin_error = self._load_admin_definitions()
+        resolved: dict[int, RedmineCustomField] = {
+            cf_id: definitions[cf_id]
+            for cf_id, _name in stubs
+            if cf_id in definitions
+        }
+        missing = [cf_id for cf_id, _name in stubs if cf_id not in resolved]
+
+        if missing and self._session_cookie:
+            html_definitions = self._get_project_issue_form_definitions(project_id)
+            for cf_id in missing:
+                if cf_id in html_definitions:
+                    resolved[cf_id] = html_definitions[cf_id]
+
         fields: list[RedmineCustomField] = []
-        for cf in project.get("issue_custom_fields", []) or []:
-            fields.append(RedmineCustomField(
-                id=cf["id"],
-                name=cf.get("name", ""),
-                field_format=cf.get("field_format", ""),
-                is_required=bool(cf.get("is_required", False)),
-                multiple=bool(cf.get("multiple", False)),
-                possible_values=cf.get("possible_values", []) or [],
-                default_value=cf.get("default_value", ""),
-                visible=cf.get("visible", True),
-                editable=cf.get("editable", True),
-            ))
-        return fields
+        for cf_id, name in stubs:
+            definition = resolved.get(cf_id)
+            if definition is not None:
+                fields.append(replace(definition, name=name))
+            else:
+                fields.append(
+                    self._degraded_custom_field(
+                        project_id,
+                        cf_id,
+                        name,
+                        self._degradation_reason(project_id, admin_error),
+                    )
+                )
+        self._project_custom_fields[project_id] = fields
+        return copy.deepcopy(fields)
 
     # ---- Miembros del proyecto ----
 

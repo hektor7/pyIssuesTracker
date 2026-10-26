@@ -93,7 +93,7 @@ Abre la configuracion desde el menu **Archivo -> Configuracion** (o boton **Conf
 |---|---|
 | **URL del servidor** | Direccion completa de tu instancia Redmine (ej. `https://redmine.mi-empresa.com`) |
 | **API Key** | Tu clave de acceso a la API REST de Redmine |
-| **Cookie** | Header de cookies del navegador (solo si Redmine esta tras un SSO) |
+| **Cookie** | Header de cookies del navegador: necesario detras de un SSO y tambien para resolver campos personalizados cuando la API key no es de administrador |
 | **Headers extra** | Cabeceras HTTP adicionales que requiera el proxy SSO (formato `Clave: Valor`, una por linea) |
 
 ### 3.2 Pestana Proxy
@@ -148,6 +148,14 @@ Copia estas lineas en el campo **Headers extra** respetando el formato `Clave: V
 ### Verificar la conexion
 
 Tras configurar las cookies y headers, ve a **Archivo -> Conectar** (o pulsa `Ctrl+R`). El LED en la barra inferior se pondra **verde** si la conexion es correcta.
+
+### Campos personalizados y Cookie de sesion
+
+La Cookie de sesion tambien permite resolver el tipo y las opciones de los
+campos personalizados (por ejemplo, listas desplegables) cuando la API key no
+tiene permisos de administrador. Si no hay Cookie ni API key de administrador,
+esos campos se muestran como texto libre y el dialogo de tarea muestra un aviso
+discreto indicando como configurarlos.
 
 ---
 

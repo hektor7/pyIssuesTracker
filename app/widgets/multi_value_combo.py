@@ -93,6 +93,37 @@ class MultiValueCombo(QWidget):
             if self._list.item(i).checkState() == Qt.CheckState.Checked
         ]
 
+    def add_missing_items(self, values: list[str]):
+        """Añade al final las opciones que aún no existen, sin marcarlas.
+
+        Se usa para representar valores previos que ya no figuran entre las
+        opciones actuales del campo y no deben perderse al guardar. El usuario
+        puede desmarcarlos explícitamente si quiere eliminarlos.
+        """
+        existentes = {
+            self._list.item(i).text() for i in range(self._list.count())
+        }
+        nuevos: list[str] = []
+        for valor in values or []:
+            texto = str(valor)
+            if texto not in existentes:
+                existentes.add(texto)
+                nuevos.append(texto)
+        if not nuevos:
+            return
+        self._list.blockSignals(True)
+        for text in nuevos:
+            item = QListWidgetItem(text)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            item.setToolTip(text)
+            self._list.addItem(item)
+            self._values.append(text)
+        self._list.blockSignals(False)
+        self.setEnabled(bool(self._values))
+        self._apply_filter(self._filter_text)
+        self._update_button_text()
+
     def set_selected_values(self, values: list[str]):
         """Sustituye la selección completa por los valores indicados."""
         wanted = {str(v) for v in values or []}

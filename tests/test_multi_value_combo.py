@@ -168,3 +168,17 @@ def test_popup_shows_options_when_expanded(qapp):
     assert combo._list.count() == 2
     for i in range(combo._list.count()):
         assert combo._list.item(i).isHidden() is False
+
+
+def test_add_missing_items_appends_without_duplicates(qapp):
+    """Los valores previos ausentes se añaden al final y pueden marcarse."""
+    combo = MultiValueCombo()
+    combo.set_items(["A", "B"])
+
+    combo.add_missing_items(["B", "Z"])
+
+    textos = [combo._list.item(i).text() for i in range(combo._list.count())]
+    assert textos == ["A", "B", "Z"]
+
+    combo.set_selected_values(["A", "Z"])
+    assert combo.selected_values() == ["A", "Z"]
