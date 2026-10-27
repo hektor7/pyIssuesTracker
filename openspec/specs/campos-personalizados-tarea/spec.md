@@ -216,7 +216,9 @@ El `TaskDialog` SHALL mostrar una sección "Campos personalizados" situada ANTES
 - **THEN** cada control muestra el valor actual del issue para su campo
 
 ### Requirement: Edición de valores según el formato del campo
-El `TaskDialog` SHALL construir el control de edición de cada campo personalizado en función de su `field_format` y SHALL soportar campos de valor múltiple. Los textos de las opciones SHALL mostrarse elididos cuando no quepan, con tooltip del valor completo, y los campos sin `possible_values` SHALL mostrarse deshabilitados con un texto de ayuda. La conservación del valor previo SHALL depender del tipo de control: en un campo de valor múltiple con `possible_values` no vacíos, los valores previos ausentes de las opciones SHALL inyectarse en el selector como ítems adicionales marcados y SHALL enviarse en el payload completo; en un campo de valor múltiple con `possible_values` vacío y en una lista simple con valor previo fuera de las opciones, el campo SHALL omitirse del payload para conservar el valor existente en Redmine.
+El `TaskDialog` SHALL construir el control de edición de cada campo personalizado en función de su `field_format` y SHALL soportar campos de valor múltiple. Los textos de las opciones SHALL mostrarse elididos cuando no quepan, con tooltip del valor completo, y los campos sin `possible_values` SHALL mostrarse deshabilitados con un texto de ayuda. La conservación del valor previo SHALL depender del tipo de control: en un campo de valor múltiple con `possible_values` no vacíos, los valores previos ausentes de las opciones SHALL inyectarse en el selector como ítems adicionales marcados y SHALL enviarse en el payload completo; en un campo de valor múltiple con `possible_values` vacío y en una lista simple cuyo valor previo no sea representable, el campo SHALL omitirse del payload para conservar el valor existente en Redmine. Un valor previo de lista simple es representable cuando es escalar y figura en `possible_values`, o cuando es una lista de exactamente un elemento presente en `possible_values`; en este último caso SHALL seleccionarse ese elemento en el combo (normalizado a escalar). Una lista simple con valor previo en forma de lista de varios elementos, o de un único elemento ausente de `possible_values`, SHALL marcarse como no representable.
+
+Cuando la definición no se resuelva y el campo use el fallback de texto (`kind` "string" o "text"), un valor previo en forma de lista SHALL renderizarse como sus elementos unidos por `", "`, omitiendo los elementos `None` o vacíos, y nunca mediante `str(lista)`. El tipo del valor previo SHALL conservarse al serializar: si el usuario acepta sin modificar el texto, el payload SHALL reenviar la lista original intacta; si modifica el texto y no lo deja vacío, SHALL enviar una lista de un elemento con ese texto; si lo vacía, SHALL enviar una lista vacía `[]`. La comprobación de "sin modificar" SHALL comparar el texto crudo del widget (sin `strip`) con el texto previo exacto, o normalizar ambos lados de forma simétrica; el `strip` SHALL aplicarse solo al construir el valor final editado. Al vaciar un campo con valor previo lista, `custom_fields` SHALL enviar `[]` y no SHALL convertirlo a `""`. Escribir comas en el texto no SHALL separar elementos. Un valor previo no representable SHALL omitirse del payload siempre que esté marcado como tal, con independencia del valor serializado.
 
 #### Scenario: Campo de tipo texto corto
 - **WHEN** el campo tiene `field_format` "string"
@@ -304,9 +306,58 @@ El `TaskDialog` SHALL construir el control de edición de cada campo personaliza
 - **WHEN** el campo es de valor múltiple y `possible_values` está vacío
 - **THEN** el campo se omite del payload y el valor existente se conserva en Redmine
 
-#### Scenario: Lista simple con valor previo fuera de las opciones
-- **WHEN** el campo es de lista simple y el valor previo del issue no está entre las `possible_values`
+#### Scenario: Lista simple con valor previo escalar fuera de las opciones
+- **WHEN** el campo es de lista simple y el valor previo del issue es escalar y no está entre las `possible_values`
 - **THEN** el campo se omite del payload y el valor existente se conserva en Redmine
+
+#### Scenario: Fallback de texto con valor previo lista
+- **WHEN** un campo sin definición resuelta usa `kind` "string" o "text" y su valor previo es `["Petición de mejora / usabilidad", "Otra"]`
+- **THEN** el control muestra `Petición de mejora / usabilidad, Otra`
+- **AND** el texto no contiene corchetes, comillas ni el `repr` de la lista
+
+#### Scenario: Aceptar sin cambios un campo de texto con valor previo lista
+- **WHEN** el campo usa el fallback de texto, el valor previo es una lista y el usuario acepta sin modificar el texto mostrado
+- **THEN** el payload reenvía la lista original intacta, elemento por elemento
+
+#### Scenario: Aceptar sin cambios una lista con espacios
+- **WHEN** el campo usa el fallback de texto, el valor previo es `[" A", "B"]` y el usuario acepta sin modificar el texto mostrado
+- **THEN** el payload reenvía la lista original `[" A", "B"]`, incluidos los espacios de sus elementos
+- **AND** la comparación para decidir si el usuario editó el texto se hace entre el texto crudo del widget y el render previo exacto, sin `strip`; `strip` se aplica únicamente al construir el valor final cuando el usuario sí lo editó.
+
+#### Scenario: Editar el texto de un campo con valor previo lista
+- **WHEN** el campo usa el fallback de texto, el valor previo es una lista y el usuario modifica el texto y no lo deja vacío
+- **THEN** el payload envía una lista de un elemento con el texto editado
+- **AND** el texto con comas no se divide en varios elementos
+
+#### Scenario: Vaciar un campo de texto con valor previo lista
+- **WHEN** el campo usa el fallback de texto, el valor previo es una lista y el usuario vacía el texto
+- **THEN** `_read_custom_field_value` produce `[]` y `custom_fields` envía una lista vacía `[]`
+- **AND** no envía una cadena vacía, aunque el control sea de texto
+
+#### Scenario: Lista simple con un único valor previo en forma de lista válido
+- **WHEN** el campo tiene `field_format` "list", `multiple` falso, `possible_values` contiene el valor y el valor previo es una lista de exactamente un elemento
+- **THEN** el combo selecciona ese valor (normalizado a escalar)
+- **AND** el campo se trata como representable y se envía ese valor en el payload
+
+#### Scenario: Lista simple con valor previo en forma de lista no representable
+- **WHEN** el campo tiene `field_format` "list", `multiple` falso y el valor previo es una lista con varios elementos, o con un único elemento que no figura en `possible_values`
+- **THEN** el campo se marca como no representable
+- **AND** se omite del payload y el valor existente se conserva en Redmine
+
+#### Scenario: Lista sin opciones con valor previo no vacío
+- **WHEN** el campo es `list` o `multiple` sin `possible_values` y tiene un valor previo no vacío
+- **THEN** el campo se marca como no representable
+- **AND** se omite del payload y el valor existente se conserva en Redmine
+
+#### Scenario: String legítimo con corchetes
+- **WHEN** el valor previo es la cadena `"['A']"`
+- **THEN** se trata como texto y se muestra tal cual
+- **AND** no se reconstruye como lista ni se reinterpreta con `ast` o expresiones regulares
+
+#### Scenario: Regresión de strings normales y múltiples representables
+- **WHEN** el campo es de texto con un valor previo escalar o es un múltiple con `possible_values` no vacíos
+- **THEN** el renderizado y el payload mantienen su comportamiento anterior
+- **AND** los múltiples con valores inyectables siguen enviando la lista completa
 
 ### Requirement: Marcado de campos obligatorios y valor por defecto
 El `TaskDialog` SHALL indicar visualmente los campos personalizados con `is_required` verdadero y SHALL aplicar el `default_value` del campo cuando exista.
@@ -460,7 +511,9 @@ Cuando al menos un campo personalizado tenga `definition_source == "none"`, `Tas
 - **THEN** el texto explica que la cookie permite resolver campos personalizados cuando la API key no es de administrador
 
 ### Requirement: Payload y alineación con la definición
-El payload SHALL permanecer sin cambios cuando la resolución no aporte información nueva. Cuando la definición de administrador aporte `is_required` o `default_value`, el diálogo SHALL alinearse intencionadamente con Redmine mostrando el asterisco de obligatorio y aplicando el valor por defecto en altas. En una tarea existente sin modificar, los valores representables SHALL enviarse sin cambios; los valores previos de un campo `multiple` con `possible_values` no vacíos que no figuren entre las opciones SHALL inyectarse en el widget como ítems marcados y SHALL enviarse completos en el payload; un campo `multiple` con `possible_values` vacío y una lista simple con valor previo fuera de las opciones SHALL omitirse del payload para conservar el valor existente en Redmine.
+El payload SHALL permanecer sin cambios cuando la resolución no aporte información nueva. Cuando la definición de administrador aporte `is_required` o `default_value`, el diálogo SHALL alinearse intencionadamente con Redmine mostrando el asterisco de obligatorio y aplicando el valor por defecto en altas. En una tarea existente sin modificar, los valores representables SHALL enviarse sin cambios; los valores previos de un campo `multiple` con `possible_values` no vacíos que no figuren entre las opciones SHALL inyectarse en el widget como ítems marcados y SHALL enviarse completos en el payload; un campo `multiple` con `possible_values` vacío y una lista simple con valor previo no representable (escalar ausente de las opciones, lista de varios elementos o lista de un único elemento ausente) SHALL omitirse del payload para conservar el valor existente en Redmine. Una lista simple con una lista previa de exactamente un elemento presente en `possible_values` SHALL seleccionar ese elemento y enviarlo como escalar.
+
+La degradación no SHALL alterar ni el tipo ni el valor previo. En particular, un valor previo en forma de lista en un campo cuyo control es de texto libre SHALL reenviarse como lista cuando el usuario no lo modifique, y nunca como el texto del `repr` de Python. Al vaciar un campo degradado con valor previo lista, el payload SHALL contener `[]` y nunca `""`. Un campo marcado como no representable SHALL omitirse del payload siempre, no solo cuando su valor serializado quede vacío.
 
 #### Scenario: Payload sin cambios si la definición no aporta información nueva
 - **WHEN** el usuario abre una tarea existente y acepta sin modificar los campos personalizados
@@ -484,8 +537,8 @@ El payload SHALL permanecer sin cambios cuando la resolución no aporte informac
 - **THEN** el widget se muestra deshabilitado y el campo se omite del payload
 - **AND** el valor almacenado en Redmine no se borra
 
-#### Scenario: Lista simple con valor previo fuera de las opciones
-- **WHEN** una lista simple tiene un valor previo que no figura en `possible_values`
+#### Scenario: Lista simple con valor previo escalar fuera de las opciones
+- **WHEN** una lista simple tiene un valor previo escalar que no figura en `possible_values`
 - **THEN** el campo se omite del payload
 - **AND** el valor almacenado en Redmine no se borra
 
@@ -508,4 +561,24 @@ El payload SHALL permanecer sin cambios cuando la resolución no aporte informac
 - **WHEN** un campo de lista simple o un campo `multiple` sin opciones tiene valor previo en Redmine y el usuario acepta sin tocarlo
 - **THEN** el campo se omite del payload
 - **AND** el valor almacenado en Redmine no se borra
+
+#### Scenario: Degradación de un multivalor sin cambios conserva la lista
+- **WHEN** un campo sin definición resuelta tiene un valor previo en forma de lista y el usuario acepta sin modificar el texto
+- **THEN** el payload contiene la lista original, con sus elementos y su tipo
+- **AND** no contiene una cadena con corchetes ni el `repr` de Python
+
+#### Scenario: Degradación de un multivalor editado envía una lista
+- **WHEN** un campo sin definición resuelta tiene un valor previo en forma de lista y el usuario modifica el texto sin dejarlo vacío
+- **THEN** el payload envía una lista de un elemento con el texto editado
+
+#### Scenario: Degradación de un multivalor vaciado envía lista vacía
+- **WHEN** un campo sin definición resuelta tiene un valor previo en forma de lista y el usuario vacía el texto
+- **THEN** el payload envía `[]` para limpiar el campo
+- **AND** no envía `""`
+
+#### Scenario: Campo no representable omitido aunque el valor serializado no esté vacío
+- **WHEN** un campo `list` o `multiple` está marcado como no representable y su control produce un valor no vacío (por ejemplo, una opción seleccionada)
+- **THEN** el campo se omite igualmente del payload
+- **AND** la omisión no depende de que el widget esté vacío
+- **AND** el valor almacenado en Redmine se conserva
 

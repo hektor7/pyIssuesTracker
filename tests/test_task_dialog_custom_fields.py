@@ -12,7 +12,16 @@ Cubren:
 from unittest.mock import MagicMock
 
 from PyQt6.QtCore import QDate, Qt
-from PyQt6.QtWidgets import QFrame, QLineEdit
+from PyQt6.QtGui import QFontMetrics
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QDateEdit,
+    QDoubleSpinBox,
+    QFrame,
+    QLineEdit,
+    QPlainTextEdit,
+    QSpinBox,
+)
 
 from app.dialogs.task_dialog import TaskDialog
 from app.services.redmine_client import RedmineCustomField
@@ -199,6 +208,20 @@ class TestSerialization:
         dlg = _make_dialog(redmine, fields)
 
         w = dlg._custom_field_widgets
+
+        # Tipos de control por field_format (granularidad de la verificación)
+        assert isinstance(w[1]["widget"], QLineEdit)
+        assert isinstance(w[2]["widget"], QPlainTextEdit)
+        assert isinstance(w[3]["widget"], QSpinBox)
+        assert w[3]["widget"].minimum() == -2147483648
+        assert w[3]["widget"].maximum() == 2147483647
+        assert isinstance(w[4]["widget"], QDoubleSpinBox)
+        assert w[4]["widget"].decimals() == 4
+        assert w[4]["widget"].minimum() == -1e12
+        assert w[4]["widget"].maximum() == 1e12
+        assert isinstance(w[5]["widget"], QDateEdit)
+        assert isinstance(w[6]["widget"], QCheckBox)
+
         w[1]["widget"].setText("hola")
         w[2]["widget"].setPlainText("notas")
         w[3]["widget"].setValue(42)
@@ -642,3 +665,347 @@ def test_project_change_with_open_popup_leaves_no_visible_popup(qapp):
 
     nuevo = dlg._custom_field_widgets[2]["widget"]
     assert nuevo._popup.isVisible() is False
+
+
+class TestFallbackTextPreviousList:
+    """Renderizado legible y round-trip de listas en el fallback de texto."""
+
+    def test_fallback_string_renders_previous_list_without_repr(self, qapp):
+        """2.1: un QLineEdit muestra los elementos unidos por ', ' sin repr."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Libre", "")],
+            task_data=_edit_task_data(
+                {1: ["Petición de mejora / usabilidad", "Otra"]}
+            ),
+        )
+
+        entry = dlg._custom_field_widgets[1]
+        assert isinstance(entry["widget"], QLineEdit)
+        texto = entry["widget"].text()
+        assert texto == "Petición de mejora / usabilidad, Otra"
+        assert "[" not in texto
+        assert "]" not in texto
+        assert "'" not in texto
+
+    def test_fallback_text_renders_previous_list_without_repr(self, qapp):
+        """2.1: un QPlainTextEdit muestra los elementos unidos por ', ' sin repr."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Largo", "text")],
+            task_data=_edit_task_data(
+                {1: ["Petición de mejora / usabilidad", "Otra"]}
+            ),
+        )
+
+        entry = dlg._custom_field_widgets[1]
+        assert isinstance(entry["widget"], QPlainTextEdit)
+        texto = entry["widget"].toPlainText()
+        assert texto == "Petición de mejora / usabilidad, Otra"
+        assert "[" not in texto
+        assert "]" not in texto
+        assert "'" not in texto
+
+    def test_render_previous_list_omits_empty_and_none_items(self, qapp):
+        """2.3: None y "" no generan separadores vacíos ni alteran el orden."""
+        redmine = MagicMock()
+        dlg = _make_dialog(redmine, [_field(1, "Libre", "")])
+
+        assert dlg._render_previous_text(
+            [None, "A", "", "B", None]
+        ) == "A, B"
+        assert dlg._render_previous_text([None, ""]) == ""
+        assert dlg._render_previous_text("escalar") == "escalar"
+
+    def test_fallback_string_accept_unchanged_resends_original_list(self, qapp):
+        """3.1: aceptar sin cambios reenvía la lista original en QLineEdit."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Libre", "")],
+            task_data=_edit_task_data({1: ["A", "B"]}),
+        )
+
+        assert dlg.custom_fields == {1: ["A", "B"]}
+
+    def test_fallback_text_accept_unchanged_resends_original_list(self, qapp):
+        """3.1: aceptar sin cambios reenvía la lista original en QPlainTextEdit."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Largo", "text")],
+            task_data=_edit_task_data({1: ["A", "B"]}),
+        )
+
+        assert dlg.custom_fields == {1: ["A", "B"]}
+
+    def test_fallback_string_unchanged_list_with_spaces_preserves_elements(self, qapp):
+        """3.2: el texto crudo sin strip conserva los espacios de los elementos."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Libre", "")],
+            task_data=_edit_task_data({1: [" A", "B"]}),
+        )
+
+        assert dlg._custom_field_widgets[1]["widget"].text() == " A, B"
+        assert dlg.custom_fields == {1: [" A", "B"]}
+
+    def test_fallback_string_edited_resends_single_item_list(self, qapp):
+        """3.4: editar el texto envía una lista de un elemento."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Libre", "")],
+            task_data=_edit_task_data({1: ["A", "B"]}),
+        )
+
+        dlg._custom_field_widgets[1]["widget"].setText("Solo este")
+
+        assert dlg.custom_fields == {1: ["Solo este"]}
+
+    def test_fallback_string_cleared_resends_empty_list_not_empty_string(self, qapp):
+        """3.6: vaciar un campo con previo lista envía [] y nunca ""."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Libre", "")],
+            task_data=_edit_task_data({1: ["A", "B"]}),
+        )
+
+        dlg._custom_field_widgets[1]["widget"].setText("")
+
+        assert dlg.custom_fields == {1: []}
+        assert dlg.custom_fields != {1: ""}
+
+    def test_fallback_string_commas_are_single_item(self, qapp):
+        """3.8: las comas editadas no separan elementos (limitación de D2).
+
+        Se parte de un previo distinto de "A, B": si el previo fuese ["A", "B"],
+        el texto editado "A, B" coincidiría con el render sin cambios y D2 lo
+        trataría como aceptación sin modificar (no es observable una edición).
+        """
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Libre", "")],
+            task_data=_edit_task_data({1: ["Original"]}),
+        )
+
+        dlg._custom_field_widgets[1]["widget"].setText("A, B")
+
+        assert dlg.custom_fields == {1: ["A, B"]}
+
+
+class TestSimpleListPreviousList:
+    """Lista simple con valor previo en forma de lista (D3)."""
+
+    def test_list_kind_with_single_valid_previous_list_selects_value(self, qapp):
+        """4.1: una lista de un elemento válido se selecciona y se envía escalar."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(7, "Lista", "list", possible_values=["A", "B"])],
+            task_data=_edit_task_data({7: ["A"]}),
+        )
+
+        entry = dlg._custom_field_widgets[7]
+        assert entry["widget"].currentData() == "A"
+        assert not entry.get("previo_no_representable")
+        assert dlg.custom_fields == {7: "A"}
+
+    def test_list_kind_with_non_representable_previous_list_is_omitted(self, qapp):
+        """4.3: varios elementos o un único inválido se omiten del payload."""
+        redmine = MagicMock()
+        fields = [_field(7, "Lista", "list", possible_values=["A", "B"])]
+
+        dlg_multi = _make_dialog(
+            redmine, fields, task_data=_edit_task_data({7: ["A", "B"]})
+        )
+        entry_multi = dlg_multi._custom_field_widgets[7]
+        assert entry_multi.get("previo_no_representable") is True
+        assert dlg_multi.custom_fields == {}
+
+        dlg_invalido = _make_dialog(
+            redmine, fields, task_data=_edit_task_data({7: ["Z"]})
+        )
+        entry_invalido = dlg_invalido._custom_field_widgets[7]
+        assert entry_invalido.get("previo_no_representable") is True
+        assert dlg_invalido.custom_fields == {}
+
+    def test_no_representable_with_non_empty_serialized_value_is_omitted(self, qapp):
+        """4.5: la marca omite el campo aunque el control tenga valor no vacío."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [
+                _field(7, "Lista", "list", possible_values=["A", "B"]),
+                _field(8, "Multi", "list", multiple=True, possible_values=["A", "B"]),
+            ],
+            task_data=_edit_task_data({7: ["Z"]}),
+        )
+
+        # Un list no representable que ahora tiene una opción válida seleccionada.
+        combo = dlg._custom_field_widgets[7]["widget"]
+        combo.setCurrentIndex(combo.findData("A"))
+        assert dlg._custom_field_widgets[7]["previo_no_representable"] is True
+
+        # Un multiple marcado explícitamente (p. ej. sin opciones) con valor.
+        dlg._custom_field_widgets[8]["previo_no_representable"] = True
+        dlg._custom_field_widgets[8]["widget"].set_selected_values(["A"])
+
+        assert dlg.custom_fields == {}
+
+    def test_list_without_options_previous_value_is_omitted(self, qapp):
+        """4.7: list sin possible_values con previo se marca y se omite."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(7, "Lista", "list", possible_values=[])],
+            task_data=_edit_task_data({7: "Antigua"}),
+        )
+
+        assert dlg._custom_field_widgets[7]["previo_no_representable"] is True
+        assert dlg.custom_fields == {}
+
+    def test_multiple_without_options_previous_value_is_omitted(self, qapp):
+        """4.7: multiple sin possible_values con previo se marca y se omite."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(8, "Multi", "list", multiple=True, possible_values=[])],
+            task_data=_edit_task_data({8: ["x"]}),
+        )
+
+        assert dlg._custom_field_widgets[8]["previo_no_representable"] is True
+        assert dlg.custom_fields == {}
+
+    def test_multiple_with_injectable_values_is_not_marked_not_representable(
+        self, qapp
+    ):
+        """4.8: un multiple con opciones inyecta los ausentes y los envía."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(8, "Multi", "list", multiple=True, possible_values=["x", "y"])],
+            task_data=_edit_task_data({8: ["x", "z"]}),
+        )
+
+        assert not dlg._custom_field_widgets[8].get("previo_no_representable")
+        assert dlg.custom_fields == {8: ["x", "z"]}
+
+
+class TestRegresionesMultivalor:
+    """Caracterización: no se reinterpretan strings ni se rompen los múltiples."""
+
+    def test_string_with_brackets_is_treated_as_text(self, qapp):
+        """5.1: una cadena con corchetes es texto legítimo, no una lista."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Libre", "")],
+            task_data=_edit_task_data({1: "['A']"}),
+        )
+
+        assert dlg._custom_field_widgets[1]["widget"].text() == "['A']"
+        assert dlg.custom_fields == {1: "['A']"}
+
+    def test_plain_string_previous_value_still_roundtrips(self, qapp):
+        """6.1: un string escalar se muestra y se reenvía sin cambios."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Corto", "string"), _field(2, "Largo", "text")],
+            task_data=_edit_task_data({1: "hola", 2: "notas\nlargas"}),
+        )
+
+        assert dlg._custom_field_widgets[1]["widget"].text() == "hola"
+        assert dlg._custom_field_widgets[2]["widget"].toPlainText() == "notas\nlargas"
+        assert dlg.custom_fields == {1: "hola", 2: "notas\nlargas"}
+
+    def test_representable_multiple_still_sends_full_list(self, qapp):
+        """6.2: un multiple representable mantiene render, inyección y payload."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(8, "Multi", "list", multiple=True, possible_values=["x", "y"])],
+            task_data=_edit_task_data({8: ["x", "y"]}),
+        )
+
+        assert not dlg._custom_field_widgets[8].get("previo_no_representable")
+        assert dlg._custom_field_widgets[8]["widget"].selected_values() == ["x", "y"]
+        assert dlg.custom_fields == {8: ["x", "y"]}
+
+
+class TestObservacionesVerificacion:
+    """Observaciones surgidas en la verificación del cambio."""
+
+    def test_edit_matching_previous_render_is_treated_as_unchanged(self, qapp):
+        """8.1: una edición indistinguible del render reenvía la lista original."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(1, "Libre", "")],
+            task_data=_edit_task_data({1: ["A", "B"]}),
+        )
+
+        # Texto idéntico al render sin cambios: no hay forma de observar una
+        # edición, así que D2 lo trata como aceptación sin modificar.
+        dlg._custom_field_widgets[1]["widget"].setText("A, B")
+
+        assert dlg.custom_fields == {1: ["A", "B"]}
+        assert dlg.custom_fields != {1: ["A, B"]}
+
+    def test_multiple_with_empty_or_none_previous_keeps_valid_values(self, qapp):
+        """8.2: "" y None no marcan el multiple como no representable."""
+        redmine = MagicMock()
+        dlg = _make_dialog(
+            redmine,
+            [_field(8, "Multi", "list", multiple=True, possible_values=["A", "B"])],
+            task_data=_edit_task_data({8: ["A", "", None, "B"]}),
+        )
+
+        entry = dlg._custom_field_widgets[8]
+        assert not entry.get("previo_no_representable")
+        assert entry["widget"].selected_values() == ["A", "B"]
+        assert dlg.custom_fields == {8: ["A", "B"]}
+
+
+def test_multiple_long_options_elide_and_keep_full_tooltip(qapp):
+    """9.5: el selector múltiple elide por la derecha y conserva el tooltip."""
+    redmine = MagicMock()
+    largo = "Etiqueta-muy-larga-" * 8
+    dlg = _make_dialog(
+        redmine,
+        [_field(1, "Multi", "list", multiple=True, possible_values=[largo, "Corta"])],
+    )
+
+    widget = dlg._custom_field_widgets[1]["widget"]
+    assert widget._list.textElideMode() == Qt.TextElideMode.ElideRight
+    assert widget._list.item(0).text() == largo
+    assert widget._list.item(0).toolTip() == largo
+    assert widget._list.item(1).toolTip() == "Corta"
+
+    metrics = QFontMetrics(widget._list.font())
+    elided = metrics.elidedText(largo, Qt.TextElideMode.ElideRight, 40)
+    assert "…" in elided
+    assert len(elided) < len(largo)
+
+
+def test_multiple_uncheck_all_injected_values_sends_empty_list(qapp):
+    """9.6: desmarcar todos los valores (incluido el inyectado) envía []."""
+    redmine = MagicMock()
+    dlg = _make_dialog(
+        redmine,
+        [_field(8, "Multi", "list", multiple=True, possible_values=["x", "y"])],
+        task_data=_edit_task_data({8: ["x", "z"]}),
+    )
+
+    widget = dlg._custom_field_widgets[8]["widget"]
+    for i in range(widget._list.count()):
+        widget._list.item(i).setCheckState(Qt.CheckState.Unchecked)
+
+    assert dlg.custom_fields == {8: []}
+    assert dlg.custom_fields != {8: ""}

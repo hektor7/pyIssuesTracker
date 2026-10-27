@@ -691,6 +691,34 @@ class TaskDialog(QDialog):
         # Formato no contemplado: fallback a texto libre
         return QLineEdit(), "string", None
 
+    @staticmethod
+    def _render_previous_text(value) -> str:
+        """Renderiza un valor previo como texto legible.
+
+        Una lista se une con ", " omitiendo los elementos None o vacíos; nunca
+        se usa el repr de Python (`str(lista)`). Un escalar se devuelve como
+        texto sin transformar.
+        """
+        if isinstance(value, list):
+            return ", ".join(str(v) for v in value if v not in (None, ""))
+        return str(value)
+
+    @staticmethod
+    def _previos_y_opciones(previous, field_def):
+        """Normaliza el previo y las opciones de un campo list/multiple.
+
+        Devuelve (previos, opciones) como list[str] y set[str]. Los elementos
+        ``None`` y ``""`` se excluyen de ``previos`` porque no son valores
+        reales del campo.
+        """
+        previos = [
+            str(v)
+            for v in (previous if isinstance(previous, list) else [previous])
+            if v not in (None, "")
+        ]
+        opciones = {str(v) for v in (field_def.possible_values or [])}
+        return previos, opciones
+
     def _apply_custom_field_values(self):
         """Aplica el valor previo del issue o el default_value a cada widget."""
         for cf_id, entry in self._custom_field_widgets.items():
@@ -706,32 +734,48 @@ class TaskDialog(QDialog):
                     entry["kind"] == "multiple"
                     and entry["field"].possible_values
                 ):
-                    previos = (
-                        previous if isinstance(previous, list) else [previous]
+                    previos, opciones = self._previos_y_opciones(
+                        previous, entry["field"]
                     )
-                    opciones = {
-                        str(v) for v in entry["field"].possible_values or []
-                    }
                     faltantes = [
-                        str(v)
-                        for v in previos
-                        if str(v) and str(v) not in opciones
+                        v for v in previos if v not in opciones
                     ]
                     if faltantes:
                         entry["widget"].add_missing_items(faltantes)
                         entry["previos_inyectados"] = faltantes
-                self._set_custom_field_value(entry, previous)
+                # El fallback de texto conserva el tipo del valor previo: se
+                # guarda la lista original y su render exacto para detectar si
+                # el usuario modificó el texto comparando el texto CRUDO.
+                if (
+                    entry["kind"] in ("string", "text")
+                    and isinstance(previous, list)
+                ):
+                    entry["previo_lista"] = list(previous)
+                    entry["previo_texto"] = self._render_previous_text(previous)
+                # Una lista simple con un único valor previo válido se
+                # normaliza a escalar para que el combo lo seleccione.
+                previous_widget = previous
+                list_previo_no_representable = False
+                if entry["kind"] == "list" and isinstance(previous, list):
+                    _, opciones = self._previos_y_opciones(
+                        previous, entry["field"]
+                    )
+                    if len(previous) == 1 and str(previous[0]) in opciones:
+                        previous_widget = str(previous[0])
+                    else:
+                        list_previo_no_representable = True
+                self._set_custom_field_value(entry, previous_widget)
                 # Si el control no puede representar el valor previo (opciones
                 # vacías o valor ausente de possible_values), se anota para
                 # omitir el campo del payload y no borrarlo en Redmine.
                 if entry["kind"] in ("list", "multiple"):
-                    previos = previous if isinstance(previous, list) else [previous]
-                    opciones = {
-                        str(v) for v in (entry["field"].possible_values or [])
-                    }
+                    previos, opciones = self._previos_y_opciones(
+                        previous, entry["field"]
+                    )
                     opciones.update(entry.get("previos_inyectados", []))
-                    entry["previo_no_representable"] = any(
-                        str(v) not in opciones for v in previos
+                    entry["previo_no_representable"] = (
+                        list_previo_no_representable
+                        or any(v not in opciones for v in previos)
                     )
             elif entry["field"].default_value not in (None, ""):
                 self._set_custom_field_value(entry, entry["field"].default_value)
@@ -768,16 +812,22 @@ class TaskDialog(QDialog):
             selected = value if isinstance(value, list) else [value]
             widget.set_selected_values([str(v) for v in selected])
         else:  # string / text
+            valor_texto = self._render_previous_text(value)
             if kind == "text":
-                widget.setPlainText(str(value))
+                widget.setPlainText(valor_texto)
             else:
-                widget.setText(str(value))
+                widget.setText(valor_texto)
 
     def _read_custom_field_value(self, entry: dict, had_value: bool = False):
         """Serializa el valor actual del widget según su tipo.
 
         had_value indica que el campo ya tenía valor previo en el issue: en ese
         caso un 0/0.0 numérico se serializa como "0"/"0.0" en lugar de "".
+
+        En el fallback de texto con un valor previo en forma de lista se
+        conserva el tipo: sin edición se devuelve la lista original, con
+        edición una lista de un elemento y al vaciar una lista vacía. Las
+        comas del texto no separan elementos.
         """
         kind = entry["kind"]
         widget = entry["widget"]
@@ -803,28 +853,48 @@ class TaskDialog(QDialog):
         if kind == "multiple":
             return widget.selected_values()
         if kind == "text":
-            return widget.toPlainText().strip()
-        return widget.text().strip()
+            raw = widget.toPlainText()
+        else:
+            raw = widget.text()
+        # Comparación simétrica: se usa el texto CRUDO (sin strip) frente al
+        # render exacto del valor previo. Un strip solo aquí consideraría
+        # editada una lista como [" A", "B"] y corrompería sus elementos.
+        if "previo_lista" in entry and raw == entry["previo_texto"]:
+            return list(entry["previo_lista"])
+        texto = raw.strip()
+        if "previo_lista" in entry:
+            # El campo degradado conserva el tipo multivalor. Las comas no
+            # separan elementos: se envía un único elemento con el texto.
+            return [texto] if texto else []
+        return texto
 
     @property
     def custom_fields(self) -> dict[int, Any]:
         """Devuelve los valores de los campos personalizados listos para la API.
 
         Incluye con "" (o []) los campos que el issue ya tenía y el usuario ha
-        vaciado, para permitir limpiarlos; omite los vacíos sin valor previo y los
-        que tenían un valor previo no representable (ese valor se conserva en Redmine).
+        vaciado, para permitir limpiarlos; omite los vacíos sin valor previo y,
+        siempre que estén marcados como no representables, los campos cuyo
+        control no puede representar el valor previo (ese valor se conserva en
+        Redmine). La marca se fija explícitamente para listas simples cuyas
+        listas previas no son representables y para listas/múltiples sin
+        opciones.
         """
         result: dict[int, Any] = {}
         for cf_id, entry in self._custom_field_widgets.items():
+            if entry.get("previo_no_representable"):
+                # El control no puede representar el valor previo: se omite
+                # siempre (aunque el valor serializado no esté vacío) para no
+                # borrarlo ni corromperlo en Redmine al guardar.
+                continue
             had_value = entry.get("had_value", False)
             value = self._read_custom_field_value(entry, had_value)
             if value == "" or value == []:
-                if entry.get("previo_no_representable"):
-                    # El control no puede representar el valor previo: se omite
-                    # para no borrarlo en Redmine al guardar.
-                    continue
                 if had_value:
-                    result[cf_id] = [] if entry["kind"] == "multiple" else ""
+                    if entry["kind"] == "multiple" or "previo_lista" in entry:
+                        result[cf_id] = []
+                    else:
+                        result[cf_id] = ""
                 continue
             result[cf_id] = value
         return result
