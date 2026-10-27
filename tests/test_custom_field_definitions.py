@@ -3,6 +3,8 @@
 import ast
 from pathlib import Path
 
+import pytest
+
 from app.services.custom_field_definitions import (
     ParsedCustomField,
     parse_issue_form_custom_fields,
@@ -112,6 +114,26 @@ class TestSelectBooleano:
                 field_format="bool",
                 multiple=False,
                 possible_values=[],
+            )
+        }
+
+    def test_select_multiple_1_0_se_resuelve_como_lista_no_bool(self):
+        """Un select múltiple con 1/0 es una lista, no un booleano."""
+        html = (
+            '<select name="issue[custom_field_values][9][]" multiple="multiple">'
+            '<option value=""></option>'
+            '<option value="1">1</option>'
+            '<option value="0">0</option>'
+            "</select>"
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert resultado == {
+            9: ParsedCustomField(
+                field_format="list",
+                multiple=True,
+                possible_values=["1", "0"],
             )
         }
 
@@ -270,14 +292,296 @@ class TestRobustezHTML:
         ) == {}
 
 
-class TestControlesNoSoportados:
-    """3.15: el recorte deliberado del parser no reconoce otros controles."""
+class TestControlesDeTextoYFecha:
+    """Campos de texto, fecha y número renderizados como controles nativos."""
 
-    def test_textarea_input_date_input_number_input_text_y_radios_no_se_reconocen(self):
-        html = _fixture("textarea.html") + (
-            '<input type="date" name="issue[custom_field_values][17]" value="2026-01-01">'
-            '<input type="number" name="issue[custom_field_values][18]" value="3">'
-            '<input type="text" name="issue[custom_field_values][19]" value="hola">'
+    def test_textarea_se_resuelve_como_text(self):
+        """Un textarea de un campo personalizado se resuelve como texto."""
+        html = (
+            '<textarea name="issue[custom_field_values][7]">'
+            "Texto libre"
+            "</textarea>"
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert resultado == {
+            7: ParsedCustomField(
+                field_format="text",
+                multiple=False,
+                possible_values=[],
+            )
+        }
+
+    def test_input_date_se_resuelve_como_date(self):
+        """Un input de tipo date se resuelve como fecha."""
+        html = (
+            '<input type="date" name="issue[custom_field_values][8]" '
+            'value="2026-01-01">'
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert resultado == {
+            8: ParsedCustomField(
+                field_format="date",
+                multiple=False,
+                possible_values=[],
+            )
+        }
+
+    def test_input_number_se_resuelve_como_int(self):
+        """Un input de tipo number se resuelve como entero."""
+        html = (
+            '<input type="number" name="issue[custom_field_values][9]" value="3">'
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert resultado == {
+            9: ParsedCustomField(
+                field_format="int",
+                multiple=False,
+                possible_values=[],
+            )
+        }
+
+    def test_input_text_se_resuelve_como_string(self):
+        """Un input de tipo text se resuelve como texto corto."""
+        html = (
+            '<input type="text" name="issue[custom_field_values][10]" value="hola">'
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert resultado == {
+            10: ParsedCustomField(
+                field_format="string",
+                multiple=False,
+                possible_values=[],
+            )
+        }
+
+    @pytest.mark.parametrize("valor", ["12.75", "2026-01-01"])
+    def test_valores_no_estandar_renderizados_como_texto_se_resuelven_como_string(
+        self, valor
+    ):
+        """Un decimal o una fecha antigua como input text se resuelven string."""
+        html = (
+            f'<input type="text" name="issue[custom_field_values][19]" '
+            f'value="{valor}">'
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert resultado[19].field_format == "string"
+        assert resultado[19].multiple is False
+        assert resultado[19].possible_values == []
+
+
+class TestPrecedenciaYOrden:
+    """El `select` prevalece y el orden del documento se conserva."""
+
+    def test_select_prevalece_sobre_input_del_mismo_id(self):
+        """Un select reconocible gana a un input del mismo id."""
+        html = (
+            '<input type="text" name="issue[custom_field_values][3]" value="texto">'
+            '<select name="issue[custom_field_values][3]">'
+            '<option value=""></option>'
+            '<option value="Baja">Baja</option>'
+            '<option value="Alta">Alta</option>'
+            "</select>"
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert resultado == {
+            3: ParsedCustomField(
+                field_format="list",
+                multiple=False,
+                possible_values=["Baja", "Alta"],
+            )
+        }
+
+    def test_primera_aparicion_prevalece_entre_controles_del_mismo_tipo(self):
+        """Dos inputs del mismo id conservan el primero; dos select también."""
+        html_inputs = (
+            '<input type="text" name="issue[custom_field_values][4]" value="texto">'
+            '<input type="date" name="issue[custom_field_values][4]" '
+            'value="2026-01-01">'
+        )
+        html_selects = (
+            '<select name="issue[custom_field_values][5]">'
+            '<option value="Primero">Primero</option>'
+            "</select>"
+            '<select name="issue[custom_field_values][5]">'
+            '<option value="Segundo">Segundo</option>'
+            "</select>"
+        )
+
+        resultado_inputs = parse_issue_form_custom_fields(html_inputs)
+        resultado_selects = parse_issue_form_custom_fields(html_selects)
+
+        assert resultado_inputs[4].field_format == "string"
+        assert resultado_selects[5].possible_values == ["Primero"]
+
+    def test_hidden_sigue_ignorado_con_los_nuevos_controles(self):
+        """Un hidden ajeno al par booleano no altera el resultado."""
+        base = (
+            '<textarea name="issue[custom_field_values][7]"></textarea>'
+            '<input type="date" name="issue[custom_field_values][8]">'
+            '<input type="number" name="issue[custom_field_values][9]">'
+            '<input type="text" name="issue[custom_field_values][10]">'
+        )
+        con_hidden = base + (
+            '<input type="hidden" name="issue[custom_field_values][15]" value="">'
+        )
+
+        assert parse_issue_form_custom_fields(con_hidden) == (
+            parse_issue_form_custom_fields(base)
+        )
+        assert 15 not in parse_issue_form_custom_fields(con_hidden)
+
+    def test_controles_no_select_con_sufijo_corchetes_no_se_reconocen(self):
+        """El sufijo [] solo tiene efecto en los select."""
+        html = (
+            '<input type="text" name="issue[custom_field_values][6][]" value="a">'
+            '<textarea name="issue[custom_field_values][7][]"></textarea>'
+        )
+
+        assert parse_issue_form_custom_fields(html) == {}
+
+    def test_orden_entre_tipos_preserva_el_documento(self):
+        """Un textarea anterior a un select conserva su posición."""
+        html = (
+            '<textarea name="issue[custom_field_values][7]"></textarea>'
+            '<select name="issue[custom_field_values][3]">'
+            '<option value="Baja">Baja</option>'
+            "</select>"
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert list(resultado) == [7, 3]
+
+        html_con_select_posterior = html + (
+            '<select name="issue[custom_field_values][7]">'
+            '<option value="Alta">Alta</option>'
+            "</select>"
+        )
+
+        resultado = parse_issue_form_custom_fields(html_con_select_posterior)
+
+        assert list(resultado) == [7, 3]
+        assert resultado[7].field_format == "list"
+
+
+    def test_par_bool_anterior_a_select_conserva_su_posicion(self):
+        """Un checkbox+hidden inicial ordena el id antes que un select lejano."""
+        html = (
+            '<input type="checkbox" name="issue[custom_field_values][9]" value="1">'
+            '<input type="hidden" name="issue[custom_field_values][9]" value="0">'
+            '<select name="issue[custom_field_values][3]">'
+            '<option value="Baja">Baja</option>'
+            "</select>"
+            '<select name="issue[custom_field_values][9]">'
+            '<option value="Alta">Alta</option>'
+            "</select>"
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert list(resultado) == [9, 3]
+        assert resultado[9].field_format == "list"
+
+
+    def test_par_bool_prevalece_sobre_input_del_mismo_id(self):
+        """Ante un input y un par booleano del mismo id, gana el par."""
+        html = (
+            '<input type="text" name="issue[custom_field_values][9]" value="texto">'
+            '<input type="checkbox" name="issue[custom_field_values][9]" value="1">'
+            '<input type="hidden" name="issue[custom_field_values][9]" value="0">'
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert resultado[9].field_format == "bool"
+
+
+class TestBooleanoCore:
+    """El booleano de Redmine core se renderiza como checkbox + hidden."""
+
+    def test_bool_checkbox_con_hidden_se_resuelve_como_bool(self):
+        html = (
+            '<input type="checkbox" name="issue[custom_field_values][11]" value="1">'
+            '<input type="hidden" name="issue[custom_field_values][11]" value="0">'
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert resultado == {
+            11: ParsedCustomField(
+                field_format="bool",
+                multiple=False,
+                possible_values=[],
+            )
+        }
+
+    def test_hidden_sin_sufijo_no_se_resuelve_como_string(self):
+        """Un hidden sin checkbox pareja no es un campo string."""
+        html = (
+            '<input type="hidden" name="issue[custom_field_values][12]" value="0">'
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert resultado == {}
+        assert 12 not in resultado
+
+    def test_checkbox_con_sufijo_corchetes_sigue_sin_reconocerse(self):
+        """El par booleano exige el nombre exacto sin sufijo []."""
+        html = (
+            '<input type="checkbox" name="issue[custom_field_values][13][]" '
+            'value="1">'
+            '<input type="hidden" name="issue[custom_field_values][13][]" value="0">'
+        )
+
+        assert parse_issue_form_custom_fields(html) == {}
+
+
+    def test_checkbox_sin_hidden_no_se_reconoce_como_bool(self):
+        """Un checkbox sin hidden pareja no produce definición."""
+        html = (
+            '<input type="checkbox" name="issue[custom_field_values][14]" '
+            'value="1">'
+        )
+
+        assert parse_issue_form_custom_fields(html) == {}
+
+    def test_hidden_antes_del_checkbox_forma_el_par(self):
+        """El orden hidden/checkbox es indiferente para el par booleano."""
+        html = (
+            '<input type="hidden" name="issue[custom_field_values][15]" value="0">'
+            '<input type="checkbox" name="issue[custom_field_values][15]" '
+            'value="1">'
+        )
+
+        resultado = parse_issue_form_custom_fields(html)
+
+        assert resultado == {
+            15: ParsedCustomField(
+                field_format="bool",
+                multiple=False,
+                possible_values=[],
+            )
+        }
+
+
+class TestControlesNoSoportados:
+    """Radios y checkboxes con sufijo siguen fuera del alcance del parser."""
+
+    def test_grupo_de_radios_no_se_reconoce(self):
+        html = (
             '<input type="radio" name="issue[custom_field_values][20]" value="1">'
             '<input type="radio" name="issue[custom_field_values][20]" value="0">'
         )

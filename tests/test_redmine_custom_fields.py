@@ -1124,6 +1124,135 @@ class TestCopiaResultado:
         assert [cf.id for cf in segunda] == [3]
 
 
+class TestNuevosFormatosHTML:
+    """Los formatos ampliados se resuelven por HTML con su origen correcto."""
+
+    def test_campos_resueltos_por_html_tienen_definition_source_html(
+        self, cookie_client
+    ):
+        _route(
+            cookie_client,
+            membership=_membership(
+                (3, "Lista"),
+                (4, "Descripción"),
+                (5, "Fecha"),
+                (6, "Cantidad"),
+                (7, "Texto"),
+                (8, "Hecho"),
+            ),
+            admin_responses=[
+                RedmineAuthError("Acceso denegado (HTTP 403)", status_code=403)
+            ],
+        )
+        cookie_client._get_text.return_value = (
+            _select_html(3, ["Baja", "Alta"])
+            + '<textarea name="issue[custom_field_values][4]"></textarea>'
+            + '<input type="date" name="issue[custom_field_values][5]">'
+            + '<input type="number" name="issue[custom_field_values][6]">'
+            + '<input type="text" name="issue[custom_field_values][7]">'
+            + '<input type="checkbox" name="issue[custom_field_values][8]" '
+            'value="1">'
+            + '<input type="hidden" name="issue[custom_field_values][8]" value="0">'
+        )
+
+        campos = cookie_client.get_project_custom_fields(7)
+
+        formatos = {campo.id: campo.field_format for campo in campos}
+        assert formatos == {
+            3: "list",
+            4: "text",
+            5: "date",
+            6: "int",
+            7: "string",
+            8: "bool",
+        }
+        for campo in campos:
+            assert campo.definition_source == "html"
+            assert campo.degraded_reason == ""
+
+
+class TestRegresionFormatosHTML:
+    """La ampliación del parser no rompe listas ni booleanos por HTML."""
+
+    def test_regresion_lista_bool_por_html_siguen_resolviendose(
+        self, cookie_client
+    ):
+        _route(
+            cookie_client,
+            membership=_membership(
+                (3, "Lista"), (4, "Booleano select"), (5, "Booleano core")
+            ),
+            admin_responses=[
+                RedmineAuthError("Acceso denegado (HTTP 403)", status_code=403)
+            ],
+        )
+        cookie_client._get_text.return_value = (
+            _select_html(3, ["Baja", "Alta"])
+            + _select_html(4, ["1", "0"])
+            + '<input type="checkbox" name="issue[custom_field_values][5]" '
+            'value="1">'
+            + '<input type="hidden" name="issue[custom_field_values][5]" value="0">'
+        )
+
+        campos = cookie_client.get_project_custom_fields(7)
+
+        formatos = {campo.id: campo.field_format for campo in campos}
+        assert formatos == {3: "list", 4: "bool", 5: "bool"}
+        assert all(campo.definition_source == "html" for campo in campos)
+
+    def test_discriminador_no_confunde_user_version_enumeration_con_lista(
+        self, cookie_client
+    ):
+        _route(
+            cookie_client,
+            membership=_membership(
+                (11, "Usuario"), (12, "Versión"), (13, "Enumeración")
+            ),
+            admin_responses=[
+                RedmineAuthError("Acceso denegado (HTTP 403)", status_code=403)
+            ],
+        )
+        cookie_client._get_text.return_value = (
+            '<select name="issue[custom_field_values][11]">'
+            '<option value="1">Usuario Uno</option>'
+            "</select>"
+            '<select name="issue[custom_field_values][12]">'
+            '<option value="7">Versión 7</option>'
+            "</select>"
+            '<select name="issue[custom_field_values][13]">'
+            '<option value="2">Enumeración dos</option>'
+            "</select>"
+        )
+
+        campos = cookie_client.get_project_custom_fields(7)
+
+        for campo in campos:
+            assert campo.field_format == ""
+            assert campo.definition_source == "none"
+
+
+    def test_orden_publico_sigue_pertenencia_aunque_html_ordene_otro(
+        self, cookie_client
+    ):
+        """El orden de la lista pública es el de la pertenencia, no el del HTML."""
+        _route(
+            cookie_client,
+            membership=_membership((4, "Cuarto"), (3, "Tercero")),
+            admin_responses=[
+                RedmineAuthError("Acceso denegado (HTTP 403)", status_code=403)
+            ],
+        )
+        cookie_client._get_text.return_value = (
+            _select_html(3, ["Baja", "Alta"])
+            + _select_html(4, ["Uno", "Dos"])
+        )
+
+        campos = cookie_client.get_project_custom_fields(7)
+
+        assert [campo.id for campo in campos] == [4, 3]
+        assert [campo.field_format for campo in campos] == ["list", "list"]
+
+
 class TestDefinitionSource:
     """4.43: origen de cada definición y motivo solo en la degradación."""
 

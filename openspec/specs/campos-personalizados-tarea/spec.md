@@ -14,6 +14,8 @@ El `RedmineClient` SHALL exponer `get_project_custom_fields(project_id)` devolvi
 
 La definición completa (`is_required`, `default_value`, `visible` y `editable`) SHALL garantizarse únicamente por la vía de administrador. Por la vía HTML solo SHALL resolverse `field_format`, `multiple` y `possible_values`; el resto SHALL quedar en sus valores por defecto (`False`, `""`, `True`, `True`). Cada campo devuelto SHALL indicar en `definition_source` el origen de su definición (`"admin"`, `"html"` o `"none"`) y, cuando no se resuelva, un `degraded_reason` legible.
 
+El parser HTML SHALL reconocer los siguientes controles con nombre `issue[custom_field_values][N]`: `<select>` simple y `<select multiple>` o con sufijo `[]` (listas, aplicando el discriminador `value == etiqueta`), `<select>` con valores no vacíos exactamente `1` y `0` **solo si no es múltiple** (booleano), `<input type="checkbox">` junto con `<input type="hidden">` del MISMO nombre sin sufijo `[]` (booleano de Redmine core), `<textarea>` (texto largo), `<input type="date">` (fecha), `<input type="number">` (entero) e `<input type="text">` (texto corto). Un `<input type="hidden">` NO SHALL producir una definición por sí solo, tampoco en su variante sin sufijo `[]` (el `0` del booleano) ni en la variante vacía para campos múltiples; cuando comparte el nombre exacto sin `[]` con un `checkbox`, SHALL consumirse como parte del par booleano y NO SHALL clasificarse como `string`. Los grupos de radios y los checkboxes con sufijo `[]` NO SHALL reconocerse, aunque compartan nombre con un hidden del mismo sufijo. La precedencia SHALL ser: hidden descartado como control propio (salvo el par booleano), booleano 1/0 antes del discriminador de lista solo en `<select>` no múltiple (un `<select multiple>` con 1/0 SHALL resolverse como `list` con `multiple=True`), y un `<select>` reconocido antes que un `input`/`textarea` o par `checkbox` + `hidden` del mismo id; entre controles del mismo tipo SHALL prevalecer la primera aparición reconocida, deduplicando por id también en los controles `input`/`textarea`: un segundo control del mismo id NO SHALL sobrescribir la definición ya aceptada. El diccionario devuelto por `parse_issue_form_custom_fields` SHALL conservar el orden de primera aparición de cada id en el documento, también entre tipos distintos, y la prioridad de un `<select>` posterior NO SHALL adelantar la posición del campo en ese diccionario. Ese orden SHALL ser interno del parseo y de la fusión: la lista pública devuelta por `get_project_custom_fields` NO SHALL reordenarse por el documento y SHALL seguir el orden de la pertenencia del proyecto. Los nombres con sufijo `[]` en `input`/`textarea` NO SHALL reconocerse. Las limitaciones de HTML (los enteros y decimales reales renderizados como `input type="text"` se resuelven como `string`, las fechas de versiones antiguas renderizadas como texto también se resuelven como `string`, los grupos de radios/checkboxes con `[]` y los campos de otro tracker siguen sin resolverse, y no se reparan datos corrompidos) SHALL documentarse en el docstring del módulo de parseo.
+
 Los niveles 2 y 3 SHALL capturar cualquier `RedmineError` y no SHALL propagarlo; solo el fallo de la llamada de pertenencia SHALL propagarse como `RedmineError`.
 
 #### Scenario: Proyecto con campos personalizados
@@ -107,14 +109,97 @@ Los niveles 2 y 3 SHALL capturar cualquier `RedmineError` y no SHALL propagarlo;
 - **AND** queda sin resolver con `field_format=""` y `definition_source="none"`
 
 #### Scenario: Booleano renderizado como desplegable
-- **WHEN** el desplegable de un campo tiene exactamente las opciones `1` y `0`
+- **WHEN** el desplegable de un campo no múltiple tiene exactamente las opciones `1` y `0`
 - **THEN** el campo se resuelve como `bool`
 - **AND** esta comprobación prevalece sobre el discriminador de lista
 
-#### Scenario: Control no soportado por el parser
-- **WHEN** el formulario solo ofrece un `textarea`, un `input type="date"`, un `input type="number"`, un `input type="text"` o un grupo de radios/checkboxes para el campo
-- **THEN** el campo no se reconoce y queda sin resolver con `field_format=""`
+#### Scenario: Booleano 1/0 en desplegable múltiple se resuelve como lista
+- **WHEN** el formulario contiene un `<select multiple>` (o un nombre con sufijo `[]`) para el campo con valores no vacíos exactamente `1` y `0`
+- **THEN** el campo se resuelve como `field_format="list"` con `multiple=True` y `possible_values=["1", "0"]`
+- **AND** NO se resuelve como `bool`
+
+#### Scenario: Booleano renderizado como checkbox con hidden
+- **WHEN** el formulario contiene `<input type="checkbox" name="issue[custom_field_values][11]" value="1">` y `<input type="hidden" name="issue[custom_field_values][11]" value="0">`
+- **THEN** el campo se resuelve como `field_format="bool"` con `multiple=False` y sin `possible_values`
+- **AND** el `hidden` se consume como parte del par y no produce una definición `string`
+- **AND** el diálogo lo muestra como `QCheckBox`
+
+#### Scenario: Hidden sin sufijo no se clasifica como string
+- **WHEN** el formulario contiene un `<input type="hidden" name="issue[custom_field_values][12]" value="0">` sin un `checkbox` pareja
+- **THEN** ese control no se reconoce como definición
+- **AND** el campo NO se resuelve como `field_format="string"`
+- **AND** queda sin resolver con `field_format=""` y `definition_source="none"` si no hay otro control reconocible
+
+#### Scenario: Checkbox con sufijo de múltiple sigue sin reconocerse
+- **WHEN** el formulario contiene un `<input type="checkbox" name="issue[custom_field_values][13][]" value="1">` y un `<input type="hidden" name="issue[custom_field_values][13][]" value="0">`
+- **THEN** el campo no se reconoce como `bool`
+- **AND** queda sin resolver salvo que exista un `select` reconocido para el mismo id
+
+#### Scenario: Textarea renderizado como texto largo
+- **WHEN** el formulario HTML contiene `<textarea name="issue[custom_field_values][7]">` para el campo
+- **THEN** el campo se resuelve como `field_format="text"` con `multiple=False` y sin `possible_values`
+- **AND** el diálogo lo muestra como `QPlainTextEdit`
+
+#### Scenario: Input de fecha renderizado como fecha
+- **WHEN** el formulario HTML contiene `<input type="date" name="issue[custom_field_values][8]">` para el campo
+- **THEN** el campo se resuelve como `field_format="date"` con `multiple=False`
+- **AND** el diálogo lo muestra como `QDateEdit` con opción de dejarlo vacío
+
+#### Scenario: Input numérico renderizado como entero
+- **WHEN** el formulario HTML contiene `<input type="number" name="issue[custom_field_values][9]">` para el campo
+- **THEN** el campo se resuelve como `field_format="int"` con `multiple=False`
+
+#### Scenario: Input de texto renderizado como texto corto
+- **WHEN** el formulario HTML contiene `<input type="text" name="issue[custom_field_values][10]">` para el campo
+- **THEN** el campo se resuelve como `field_format="string"` con `multiple=False`
+
+#### Scenario: Número real renderizado como input de texto
+- **WHEN** un campo `float` se renderiza en el formulario como `<input type="text">` porque Redmine no distingue decimales en el control
+- **THEN** el campo se resuelve como `field_format="string"` y `multiple=False`
+- **AND** la limitación queda documentada en el docstring del módulo de parseo
+
+#### Scenario: Fecha antigua renderizada como input de texto
+- **WHEN** una versión antigua de Redmine renderiza un campo `date` como `<input type="text">`
+- **THEN** el campo se resuelve como `field_format="string"` y `multiple=False`
+- **AND** la limitación queda documentada en el docstring del módulo de parseo
+
+#### Scenario: Hidden con sufijo sigue ignorado
+- **WHEN** el formulario contiene `<input type="hidden" name="issue[custom_field_values][15][]" value="">` junto a un `select` reconocible del campo 14
+- **THEN** el campo 15 no se reconoce
+- **AND** el campo 14 se resuelve con normalidad
+
+#### Scenario: Grupo de radios o checkboxes no soportado por el parser
+- **WHEN** el formulario solo ofrece un grupo de `<input type="radio">` o de `<input type="checkbox">` con sufijo `[]` para el campo
+- **THEN** el campo no se reconoce y queda sin resolver con `field_format=""` y `definition_source="none"`
 - **AND** se comporta como hoy (texto libre), sin regresión
+- **AND** la única excepción es el `checkbox` sin sufijo `[]` con un `hidden` pareja del mismo nombre, que se resuelve como `bool`
+
+#### Scenario: Input o textarea con sufijo de múltiple no se reconoce
+- **WHEN** un `input` o un `textarea` de campo personalizado lleva sufijo `[]` en el nombre
+- **THEN** ese control no se reconoce como definición
+- **AND** el campo queda sin resolver salvo que exista un `select` reconocido para el mismo id
+
+#### Scenario: Precedencia de select sobre input para el mismo id
+- **WHEN** el formulario contiene un `<input type="text">` y un `<select>` reconocible para el mismo id de campo
+- **THEN** prevalece la definición del `select`
+- **AND** el campo se resuelve con el formato y las opciones del `select`
+
+#### Scenario: Orden entre tipos preservado
+- **WHEN** el formulario contiene un `<textarea>` del campo 7 antes que un `<select>` de lista del campo 3
+- **THEN** el diccionario devuelto por `parse_issue_form_custom_fields` contiene el campo 7 antes que el campo 3
+- **AND** ese orden refleja la aparición en el documento, no una agrupación por tipo de control
+- **AND** la lista pública de `get_project_custom_fields` no se reordena por el documento y sigue el orden de la pertenencia
+
+#### Scenario: Select posterior no adelanta la posición del campo
+- **WHEN** un `<textarea>` del campo 7 aparece antes que un `<select>` del campo 3 y después aparece un `<select>` reconocible del campo 7
+- **THEN** el campo 7 se resuelve con la definición del `select` (mayor precedencia)
+- **AND** en el diccionario de `parse_issue_form_custom_fields` el campo 7 sigue antes que el campo 3, según la primera aparición del id 7
+- **AND** la lista pública de `get_project_custom_fields` mantiene el orden de la pertenencia
+
+#### Scenario: Integración de lista, textarea y fecha con Cookie
+- **WHEN** `GET /custom_fields.json` responde HTTP 403, hay Cookie de sesión y el formulario HTML contiene un `select` de lista, un `textarea` y un `input type="date"` del proyecto
+- **THEN** el diálogo muestra un `QComboBox`, un `QPlainTextEdit` y un `QDateEdit` respectivamente
+- **AND** los tres campos tienen `definition_source="html"`
 
 #### Scenario: Formulario HTML sin el campo
 - **WHEN** el formulario se obtiene correctamente pero no contiene controles reconocidos para uno de los ids de la pertenencia
@@ -154,8 +239,9 @@ Los niveles 2 y 3 SHALL capturar cualquier `RedmineError` y no SHALL propagarlo;
 - **THEN** el `RedmineCustomField` devuelto usa el nombre de la pertenencia
 
 #### Scenario: Orden de la pertenencia preservado
-- **WHEN** la pertenencia devuelve los campos en un orden determinado y la definición global en otro
-- **THEN** la lista devuelta conserva el orden de la pertenencia
+- **WHEN** la pertenencia devuelve los campos en un orden distinto al del documento HTML y al de la definición global
+- **THEN** la lista devuelta por `get_project_custom_fields` conserva el orden de la pertenencia
+- **AND** el orden del diccionario de `parse_issue_form_custom_fields` no altera ese orden público
 
 ### Requirement: Parseo de los valores de campos personalizados del issue
 El sistema SHALL parsear el array `custom_fields` de la respuesta de un issue y exponer los valores actuales. `RedmineIssue` SHALL incluir un campo `custom_fields` como diccionario de `id` de campo a valor, y `get_issue_with_journals` SHALL incluir los valores actuales del issue.
@@ -481,7 +567,7 @@ Cuando la definición de un campo no pueda resolverse, el sistema SHALL devolver
 - **THEN** el diálogo oculta la sección de campos personalizados sin romper el resto del formulario
 
 ### Requirement: Aviso visible de definición incompleta en el diálogo
-Cuando al menos un campo personalizado tenga `definition_source == "none"`, `TaskDialog` SHALL mostrar un aviso visible, discreto y no modal dentro del grupo "Campos personalizados", con texto accionable que indique configurar la Cookie de sesión en Ajustes o usar una API key de administrador y que los campos se muestran como texto libre. El aviso SHALL mostrarse una sola vez por grupo, no repetirse por campo, no bloquear el diálogo y ocultarse cuando todos los campos se resuelvan o no haya campos. El campo Cookie de `settings_dialog.py` SHALL explicar en su ayuda o tooltip que permite resolver campos personalizados cuando la API key no es de administrador.
+Cuando al menos un campo personalizado tenga `definition_source == "none"`, `TaskDialog` SHALL mostrar un aviso visible, discreto y no modal dentro del grupo "Campos personalizados", con texto accionable que indique configurar la Cookie de sesión en Ajustes o usar una API key de administrador y que los campos se muestran como texto libre. El aviso SHALL depender únicamente de que quede algún campo con `definition_source == "none"` en la carga actual: no SHALL añadirse lógica nueva al diálogo y NO SHALL mostrarse cuando todos los campos se resuelvan por la vía de administrador o por HTML, incluidos los formatos `text`, `date`, `int`, `string` y el booleano core (`checkbox` + `hidden`). El aviso SHALL mostrarse una sola vez por grupo, no repetirse por campo, no bloquear el diálogo y ocultarse cuando todos los campos se resuelvan o no haya campos. El campo Cookie de `settings_dialog.py` SHALL explicar en su ayuda o tooltip que permite resolver campos personalizados cuando la API key no es de administrador.
 
 #### Scenario: Aviso visible cuando hay degradación
 - **WHEN** el diálogo carga campos y al menos uno tiene `definition_source="none"`
@@ -492,6 +578,16 @@ Cuando al menos un campo personalizado tenga `definition_source == "none"`, `Tas
 #### Scenario: Sin aviso cuando todo se resuelve
 - **WHEN** todos los campos tienen `definition_source` igual a `"admin"` o `"html"`
 - **THEN** el aviso no se muestra
+
+#### Scenario: Sin aviso cuando todos los campos se resuelven por HTML con los nuevos formatos
+- **WHEN** el proyecto resuelve por HTML una lista, un `text`, una `date`, un `string` y un booleano core (`checkbox` + `hidden`), y ninguno queda en `"none"`
+- **THEN** el aviso no se muestra
+- **AND** cada campo conserva `definition_source="html"`
+
+#### Scenario: Aviso presente si algún campo queda sin resolver
+- **WHEN** el proyecto resuelve por HTML una lista y un `text`, pero un campo solo se ofrece como grupo de radios y queda con `definition_source="none"`
+- **THEN** el aviso se muestra una sola vez
+- **AND** el campo no resuelto se renderiza como texto libre
 
 #### Scenario: Sin aviso cuando no hay campos
 - **WHEN** el proyecto no tiene campos personalizados o la pertenencia falla

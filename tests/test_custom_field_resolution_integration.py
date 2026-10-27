@@ -6,7 +6,15 @@ la cascada completa (pertenencia → admin → HTML) hasta el widget del diálog
 
 from unittest.mock import MagicMock
 
-from PyQt6.QtWidgets import QComboBox, QLabel, QLineEdit
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDateEdit,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QSpinBox,
+)
 
 from app.dialogs.task_dialog import TaskDialog
 from app.services.redmine_client import (
@@ -201,6 +209,135 @@ class TestListaResuelta:
         assert [
             widget._list.item(i).text() for i in range(widget._list.count())
         ] == ["Rojo", "Verde"]
+
+
+class TestFormatosPorHTML:
+    """Los formatos resueltos por el formulario HTML llegan a su widget."""
+
+    def test_lista_textarea_fecha_por_html_se_renderizan_con_su_widget(
+        self, qapp
+    ):
+        html = (
+            _select_html(3, ["Baja", "Alta"])
+            + '<textarea name="issue[custom_field_values][4]"></textarea>'
+            + '<input type="date" name="issue[custom_field_values][5]">'
+        )
+        client = _client(
+            membership=_membership((3, "Severidad"), (4, "Descripción"),
+                                   (5, "Fecha")),
+            admin_responses=[
+                RedmineAuthError("Acceso denegado (HTTP 403)", status_code=403)
+            ],
+            html=html,
+            session_cookie="session=x",
+        )
+
+        dlg = _dialog(client)
+
+        assert isinstance(dlg._custom_field_widgets[3]["widget"], QComboBox)
+        assert isinstance(
+            dlg._custom_field_widgets[4]["widget"], QPlainTextEdit
+        )
+        assert isinstance(dlg._custom_field_widgets[5]["widget"], QDateEdit)
+        for cf_id in (3, 4, 5):
+            assert dlg._custom_field_widgets[cf_id]["field"].definition_source == (
+                "html"
+            )
+
+    def test_bool_core_por_html_se_renderiza_como_checkbox(self, qapp):
+        html = (
+            '<input type="checkbox" name="issue[custom_field_values][6]" value="1">'
+            '<input type="hidden" name="issue[custom_field_values][6]" value="0">'
+        )
+        client = _client(
+            membership=_membership((6, "Hecho")),
+            admin_responses=[
+                RedmineAuthError("Acceso denegado (HTTP 403)", status_code=403)
+            ],
+            html=html,
+            session_cookie="session=x",
+        )
+
+        dlg = _dialog(client)
+
+        assert isinstance(dlg._custom_field_widgets[6]["widget"], QCheckBox)
+        assert dlg._custom_field_widgets[6]["field"].definition_source == "html"
+
+    def test_fecha_por_html_incluye_checkbox_sin_valor_y_vacia_payload(
+        self, qapp
+    ):
+        """La fecha resuelta por HTML se puede dejar vacía con "Sin valor"."""
+        client = _client(
+            membership=_membership((5, "Fecha")),
+            admin_responses=[
+                RedmineAuthError("Acceso denegado (HTTP 403)", status_code=403)
+            ],
+            html='<input type="date" name="issue[custom_field_values][5]">',
+            session_cookie="session=x",
+        )
+        dlg = TaskDialog(
+            projects=[(1, "Proyecto")],
+            default_project_id=1,
+            redmine_client=client,
+            task_data=_edit_task_data({5: "2026-01-01"}),
+        )
+
+        entrada = dlg._custom_field_widgets[5]
+
+        assert isinstance(entrada["widget"], QDateEdit)
+        assert isinstance(entrada["extra"], QCheckBox)
+        assert entrada["extra"].text() == "Sin valor"
+        assert entrada["extra"].isChecked() is False
+        assert dlg.custom_fields[5] == "2026-01-01"
+
+        entrada["extra"].setChecked(True)
+
+        assert dlg.custom_fields[5] == ""
+
+    def test_combinacion_completa_de_formatos_por_html_sin_aviso(self, qapp):
+        """Los seis formatos resueltos por HTML llegan a su widget sin aviso."""
+        html = (
+            _select_html(3, ["Baja", "Alta"])
+            + '<textarea name="issue[custom_field_values][4]"></textarea>'
+            + '<input type="date" name="issue[custom_field_values][5]">'
+            + '<input type="text" name="issue[custom_field_values][6]">'
+            + '<input type="number" name="issue[custom_field_values][7]">'
+            + '<input type="checkbox" name="issue[custom_field_values][8]" '
+            'value="1">'
+            + '<input type="hidden" name="issue[custom_field_values][8]" value="0">'
+        )
+        client = _client(
+            membership=_membership(
+                (3, "Lista"),
+                (4, "Descripción"),
+                (5, "Fecha"),
+                (6, "Texto"),
+                (7, "Cantidad"),
+                (8, "Hecho"),
+            ),
+            admin_responses=[
+                RedmineAuthError("Acceso denegado (HTTP 403)", status_code=403)
+            ],
+            html=html,
+            session_cookie="session=x",
+        )
+
+        dlg = _dialog(client)
+
+        assert dlg._custom_fields_group.isVisibleTo(dlg) is True
+        esperados = {
+            3: QComboBox,
+            4: QPlainTextEdit,
+            5: QDateEdit,
+            6: QLineEdit,
+            7: QSpinBox,
+            8: QCheckBox,
+        }
+        for cf_id, tipo in esperados.items():
+            entrada = dlg._custom_field_widgets[cf_id]
+            assert isinstance(entrada["widget"], tipo)
+            assert entrada["field"].definition_source == "html"
+        assert dlg._custom_fields_notice.isVisibleTo(dlg) is False
 
 
 class TestFallbacksDialogo:
@@ -516,3 +653,64 @@ class TestAvisoDegradacion:
 
         assert dlg._custom_fields_group.isVisibleTo(dlg) is False
         assert dlg._custom_fields_notice.isVisibleTo(dlg) is False
+
+    def test_aviso_no_aparece_cuando_lista_textarea_fecha_se_resuelven_por_html(
+        self, qapp
+    ):
+        """Si textarea y fecha se resuelven por HTML, no hay aviso."""
+        html = (
+            _select_html(3, ["Baja", "Alta"])
+            + '<textarea name="issue[custom_field_values][4]"></textarea>'
+            + '<input type="date" name="issue[custom_field_values][5]">'
+        )
+        client = _client(
+            membership=_membership(
+                (3, "Severidad"), (4, "Descripción"), (5, "Fecha")
+            ),
+            admin_responses=[
+                RedmineAuthError("Acceso denegado (HTTP 403)", status_code=403)
+            ],
+            html=html,
+            session_cookie="session=x",
+        )
+
+        dlg = _dialog(client)
+
+        assert dlg._custom_fields_group.isVisibleTo(dlg) is True
+        for cf_id in (3, 4, 5):
+            assert (
+                dlg._custom_field_widgets[cf_id]["field"].definition_source
+                == "html"
+            )
+        assert dlg._custom_fields_notice.isVisibleTo(dlg) is False
+
+    def test_aviso_aparece_si_queda_un_campo_sin_resolver(self, qapp):
+        """Un grupo de radios no reconocido mantiene visible el aviso."""
+        html = (
+            _select_html(3, ["Baja", "Alta"])
+            + '<textarea name="issue[custom_field_values][4]"></textarea>'
+            + '<input type="radio" name="issue[custom_field_values][5]" value="1">'
+            + '<input type="radio" name="issue[custom_field_values][5]" value="0">'
+        )
+        client = _client(
+            membership=_membership(
+                (3, "Severidad"), (4, "Descripción"), (5, "Opciones")
+            ),
+            admin_responses=[
+                RedmineAuthError("Acceso denegado (HTTP 403)", status_code=403)
+            ],
+            html=html,
+            session_cookie="session=x",
+        )
+
+        dlg = _dialog(client)
+
+        assert dlg._custom_fields_notice.isVisibleTo(dlg) is True
+        avisos = [
+            etiqueta
+            for etiqueta in dlg._custom_fields_group.findChildren(QLabel)
+            if "no se pudieron obtener los tipos" in etiqueta.text().lower()
+        ]
+        assert len(avisos) == 1
+        assert isinstance(dlg._custom_field_widgets[5]["widget"], QLineEdit)
+        assert dlg._custom_field_widgets[5]["field"].definition_source == "none"
